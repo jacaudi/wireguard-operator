@@ -6,7 +6,7 @@ traffic onward through [gluetun](https://github.com/qdm12/gluetun) to a commerci
 VPN provider, with clients that can be declared explicitly or injected into
 existing workloads automatically.
 
-Each numbered item below is intended to become a tracked issue.
+Each numbered item below is tracked as a GitHub issue; [#37](https://github.com/jacaudi/wireguard-operator/issues/37) is the umbrella.
 
 ---
 
@@ -148,7 +148,7 @@ nor blocks them. The killswitch does not interfere with port forwarding.
 
 Blocks everything else.
 
-### 0.1 Consolidate the two divergent Deployment builders
+### 0.1 Consolidate the two divergent Deployment builders ([#1](https://github.com/jacaudi/wireguard-operator/issues/1))
 
 Two paths render the Deployment and the newer one is dead code.
 `internal/resources/deployment.go:54` (`DeploymentBuilder.ForWireguard`) is constructed
@@ -163,7 +163,7 @@ alone would have no runtime effect.
 - [ ] Drift resolved intentionally, not by arbitrarily picking a copy
 - [ ] Existing controller tests pass unchanged
 
-### 0.2 Replace trigger-based Deployment drift checks with declarative reconciliation
+### 0.2 Replace trigger-based Deployment drift checks with declarative reconciliation ([#2](https://github.com/jacaudi/wireguard-operator/issues/2))
 
 The Deployment is only rebuilt when one of four specific checks fires: agent image
 (`:824`), userspace flag (`:844`), tunnel sidecar (`:861`), scheduling settings (`:871`).
@@ -173,7 +173,7 @@ Any new spec field would need its own bespoke check or changes would silently no
 - [ ] Changing any spec field that affects the pod triggers an update
 - [ ] No hot-loop update churn from server-defaulted fields
 
-### 0.3 Rework iptables generation: non-flushing, operator-owned chains, correct egress
+### 0.3 Rework iptables generation: non-flushing, operator-owned chains, correct egress ([#3](https://github.com/jacaudi/wireguard-operator/issues/3))
 
 `ApplyRules` runs `iptables-restore` **without `--noflush`**
 (`internal/iptables/iptables.go:14-21`), replacing the whole `*nat` and `*filter` tables
@@ -188,7 +188,7 @@ on every peer change. Separately, the NAT rule hardcodes `-o eth0`
       through to node-level SNAT
 - [ ] Equivalent v4 and v6 handling
 
-### 0.4 Add `PersistentKeepalive` to generated peer configs
+### 0.4 Add `PersistentKeepalive` to generated peer configs ([#4](https://github.com/jacaudi/wireguard-operator/issues/4))
 
 The config template (`internal/controller/wireguard_controller.go:322-370`) emits
 `PrivateKey`, `Address`, `DNS`, optional `MTU`, and the `[Peer]` block — no keepalive.
@@ -202,7 +202,7 @@ UDPRoute path, where the recorded endpoint is a proxy session with an idle timeo
 
 ## Phase 1 — Pod extension points
 
-### 1.1 Add `spec.initContainers` and `spec.extraContainers`
+### 1.1 Add `spec.initContainers` and `spec.extraContainers` ([#5](https://github.com/jacaudi/wireguard-operator/issues/5))
 
 Today the only init container is the hardcoded `sysctl` one gated on
 `spec.enableIpForwardOnPodInit`, and the only extra sidecar is `wstunnel`. There is no
@@ -216,7 +216,7 @@ some field we didn't anticipate.
 - [ ] Ordering relative to the built-in `sysctl` init container is defined and documented
 - [ ] CRD schema size increase is acceptable
 
-### 1.2 Add `spec.volumes` and volume mounts for user-supplied containers
+### 1.2 Add `spec.volumes` and volume mounts for user-supplied containers ([#6](https://github.com/jacaudi/wireguard-operator/issues/6))
 
 Sidecars need to share data — a port-forward sync service has to read the port gluetun
 writes to a file. Container fields alone are not enough.
@@ -224,7 +224,7 @@ writes to a file. Container fields alone are not enough.
 - [ ] Extra volumes render into the pod spec
 - [ ] User containers can mount both their own volumes and the built-in ones
 
-### 1.3 Validate user-supplied containers
+### 1.3 Validate user-supplied containers ([#7](https://github.com/jacaudi/wireguard-operator/issues/7))
 
 - [ ] Reject name collisions with `agent`, `wstunnel`, `sysctl`, `gluetun`
 - [ ] Clear validation errors surfaced as a status condition, not a silent drop
@@ -237,7 +237,7 @@ Modeled as a typed `spec.gluetun` block rendered through the generic sidecar mac
 from Phase 1 — one rendering path, but the operator can compute what a passthrough
 cannot (firewall ports, readiness gating, forwarded-port status).
 
-### 2.1 Design the `spec.gluetun` API
+### 2.1 Design the `spec.gluetun` API ([#8](https://github.com/jacaudi/wireguard-operator/issues/8))
 
 Provider selection, credentials by `secretRef` (never inline), server/region filters,
 port-forwarding toggle, image and resources.
@@ -245,18 +245,18 @@ port-forwarding toggle, image and resources.
 - [ ] Credentials referenced, never stored in the Wireguard object
 - [ ] Schema documented with at least one worked example
 
-### 2.2 Render the gluetun sidecar
+### 2.2 Render the gluetun sidecar ([#9](https://github.com/jacaudi/wireguard-operator/issues/9))
 
 Requires `/dev/net/tun` and `NET_ADMIN`; the agent container currently runs
 `readOnlyRootFilesystem` with `NET_ADMIN` and no privilege escalation, so the two
 security contexts need reconciling.
 
-### 2.3 Provider credentials via `secretRef`
+### 2.3 Provider credentials via `secretRef` ([#10](https://github.com/jacaudi/wireguard-operator/issues/10))
 
 - [ ] Credential rotation does not require a CRD edit
 - [ ] Credentials never appear in the Wireguard object or its status
 
-### 2.4 Auto-compute gluetun firewall input ports and outbound subnets
+### 2.4 Auto-compute gluetun firewall input ports and outbound subnets ([#11](https://github.com/jacaudi/wireguard-operator/issues/11))
 
 gluetun's killswitch will block the inbound WireGuard port and the kubelet health probes
 unless configured. Probe replies routed out the tunnel mean the pod CrashLoops.
@@ -265,21 +265,21 @@ unless configured. Probe replies routed out the tunnel mean the pod CrashLoops.
 - [ ] `FIREWALL_OUTBOUND_SUBNETS` covers the pod and node CIDRs
 - [ ] Health probes succeed with the killswitch active
 
-### 2.5 Route peer egress through the gluetun tunnel
+### 2.5 Route peer egress through the gluetun tunnel ([#12](https://github.com/jacaudi/wireguard-operator/issues/12))
 
 Depends on 0.3.
 
 - [ ] Peer traffic masquerades out the tunnel interface
 - [ ] Verified by observing the exit IP, not just by rule inspection
 
-### 2.6 Reconcile DNS between gluetun's resolver and `spec.dns`
+### 2.6 Reconcile DNS between gluetun's resolver and `spec.dns` ([#13](https://github.com/jacaudi/wireguard-operator/issues/13))
 
 gluetun runs a DNS-over-TLS listener on `127.0.0.1:53`, which interacts with the `dns`
 field handed to peers.
 
 - [ ] Documented precedence, no silent override of an explicit `spec.dns`
 
-### 2.7 Gate Wireguard readiness on gluetun tunnel health
+### 2.7 Gate Wireguard readiness on gluetun tunnel health ([#14](https://github.com/jacaudi/wireguard-operator/issues/14))
 
 Without this, the Service routes to a server whose upstream is down — traffic either
 blackholes or leaks. This is also what makes rescheduling safe.
@@ -287,13 +287,13 @@ blackholes or leaks. This is also what makes rescheduling safe.
 - [ ] Readiness reflects tunnel state, not just process liveness
 - [ ] Status condition distinguishes "tunnel down" from "pod starting"
 
-### 2.8 Surface gluetun's forwarded port in Wireguard status
+### 2.8 Surface gluetun's forwarded port in Wireguard status ([#15](https://github.com/jacaudi/wireguard-operator/issues/15))
 
 Prerequisite for any port-sync sidecar.
 
 - [ ] Forwarded port and exit IP in status, updated when they change
 
-### 2.9 E2E: egress exits via the VPN and fails closed when the tunnel drops
+### 2.9 E2E: egress exits via the VPN and fails closed when the tunnel drops ([#16](https://github.com/jacaudi/wireguard-operator/issues/16))
 
 - [ ] Test asserts the observed public IP is the provider's, not the node's
 - [ ] Test kills the tunnel and asserts traffic stops rather than leaking
@@ -302,7 +302,7 @@ Prerequisite for any port-sync sidecar.
 
 ## Phase 3 — Client paths and ingress
 
-### 3.1 Emit an internal peer config flavor pointing at the ClusterIP
+### 3.1 Emit an internal peer config flavor pointing at the ClusterIP ([#17](https://github.com/jacaudi/wireguard-operator/issues/17))
 
 Today even the "direct" config targets `serverAddress` + `Status.Port`, i.e. the
 *external* address (`wireguard_controller.go:363-369`). In-cluster clients would hairpin
@@ -314,14 +314,14 @@ re-resolves.
 
 - [ ] Injected clients get an endpoint of `<svc>.<ns>.svc.cluster.local:<port>`
 
-### 3.2 LoadBalancer UDP path for mobile and stock clients
+### 3.2 LoadBalancer UDP path for mobile and stock clients ([#18](https://github.com/jacaudi/wireguard-operator/issues/18))
 
 `spec.serviceType: LoadBalancer` and `spec.address` already exist; this is mostly
 making it a documented first-class path with a stable VIP.
 
 - [ ] Stock client config verified importable and working on iOS and Android
 
-### 3.3 Render an `HTTPRoute` for the wstunnel path
+### 3.3 Render an `HTTPRoute` for the wstunnel path ([#19](https://github.com/jacaudi/wireguard-operator/issues/19))
 
 The client-side tunnel config is already generated
 (`wireguard_controller.go:335-344`); what's missing is the route object.
@@ -332,18 +332,18 @@ The client-side tunnel config is already generated
       namespace need none; Gateway attachment is governed by the Gateway's
       `allowedRoutes.namespaces`
 
-### 3.4 Optional `UDPRoute` rendering for the direct path
+### 3.4 Optional `UDPRoute` rendering for the direct path ([#20](https://github.com/jacaudi/wireguard-operator/issues/20))
 
 Behind a flag, with the datapath tradeoff documented.
 
-### 3.5 Derive peer endpoints from `spec.gateway.hostname`, watch Gateway status
+### 3.5 Derive peer endpoints from `spec.gateway.hostname`, watch Gateway status ([#21](https://github.com/jacaudi/wireguard-operator/issues/21))
 
 Endpoint derivation currently walks `spec.externalAddress` → LoadBalancer ingress →
 NodePort plus node addresses (`wireguard_controller.go:595-670`). Add the Gateway as a
 source. Prefer a declared hostname as the single source of truth for both the route and
 the peer configs; watch Gateway status for readiness reporting only.
 
-### 3.6 Per-path MTU for direct vs tunnel configs
+### 3.6 Per-path MTU for direct vs tunnel configs ([#22](https://github.com/jacaudi/wireguard-operator/issues/22))
 
 The tunnel path carries TLS and WebSocket framing over TCP and wants a lower MTU.
 `spec.mtu` is currently a single value.
@@ -355,11 +355,11 @@ The tunnel path carries TLS and WebSocket framing over TCP and wants a lower MTU
 No webhook exists today: `cmd/manager/main.go:99` starts a server on 9443 but nothing
 registers a handler, there is no `config/webhook`, and `PROJECT` has no webhook entries.
 
-### 4.1 Webhook scaffolding
+### 4.1 Webhook scaffolding ([#23](https://github.com/jacaudi/wireguard-operator/issues/23))
 
 Server wiring, `config/webhook` manifests, `PROJECT` entries, RBAC.
 
-### 4.2 Certificate management and failure-policy scoping
+### 4.2 Certificate management and failure-policy scoping ([#24](https://github.com/jacaudi/wireguard-operator/issues/24))
 
 cert-manager or self-signed rotation, plus `failurePolicy` and `objectSelector` scoping.
 A webhook in the pod admission path that fails open-ended can block pod creation
@@ -372,7 +372,7 @@ cluster-wide.
 
 ## Phase 5 — Implicit clients
 
-### 5.1 Define the label-based opt-in contract
+### 5.1 Define the label-based opt-in contract ([#25](https://github.com/jacaudi/wireguard-operator/issues/25))
 
 Labels (not annotations) so `objectSelector` can scope the webhook. Label values are
 limited to alphanumerics, `-`, `_`, `.`, max 63 chars — fine for a server name reference.
@@ -380,7 +380,7 @@ limited to alphanumerics, `-`, `_`, `.`, max 63 chars — fine for a server name
 - [ ] Opt-in label and server-reference label defined and documented
 - [ ] Cross-namespace server references expressible
 
-### 5.2 Pod mutating webhook: inject the WireGuard client sidecar
+### 5.2 Pod mutating webhook: inject the WireGuard client sidecar ([#26](https://github.com/jacaudi/wireguard-operator/issues/26))
 
 The webhook mutates only. It must not create the peer — webhooks with side effects break
 `--dry-run` and get retried unpredictably.
@@ -389,7 +389,7 @@ The webhook mutates only. It must not create the peer — webhooks with side eff
 - [ ] Respects `dryRun`
 - [ ] Idempotent on pod update
 
-### 5.3 Pod controller: mint and reap a WireguardPeer per pod
+### 5.3 Pod controller: mint and reap a WireguardPeer per pod ([#27](https://github.com/jacaudi/wireguard-operator/issues/27))
 
 The config Secret cannot exist when the webhook runs, and doesn't need to — kubelet
 holds the pod in `ContainerCreating` until the referenced Secret appears.
@@ -402,7 +402,7 @@ Cleanup must be an explicit controller reaping orphans.
 - [ ] Peers reaped when their pod goes away, with no cross-namespace ownerRef
 - [ ] Rapid create/destroy does not leak peers or addresses
 
-### 5.4 Split the aggregated peer-config Secret into per-peer Secrets
+### 5.4 Split the aggregated peer-config Secret into per-peer Secrets ([#28](https://github.com/jacaudi/wireguard-operator/issues/28))
 
 All peer configs currently land in one `<wg-name>-peer-configs` Secret keyed by peer name
 (`wireguard_controller.go:229`), containing **every peer's private key**. Mounting that
@@ -412,7 +412,7 @@ into an app pod would hand it every other peer's credentials.
 - [ ] Injected pods mount only their own
 - [ ] Migration path for the existing aggregated Secret
 
-### 5.5 Cross-namespace `wireguardRef` with bidirectional consent
+### 5.5 Cross-namespace `wireguardRef` with bidirectional consent ([#29](https://github.com/jacaudi/wireguard-operator/issues/29))
 
 `wireguardpeer_controller.go:167` resolves `spec.wireguardRef` in the peer's own
 namespace. Add an optional namespace, and gate attachment on the server opting in
@@ -423,7 +423,7 @@ and egress through a paid tunnel.
       namespace
 - [ ] Rejected attachments surface a clear status condition
 
-### 5.6 Make peer IPAM instance-scoped rather than namespace-scoped
+### 5.6 Make peer IPAM instance-scoped rather than namespace-scoped ([#30](https://github.com/jacaudi/wireguard-operator/issues/30))
 
 `checkDuplicateAddress` lists peers with `client.InNamespace(namespace)`
 (`wireguardpeer_controller.go:241`), and `GetUsedIPs` builds the used set from that list.
@@ -434,14 +434,14 @@ elsewhere, it will hand out **duplicate tunnel IPs**.
 - [ ] Used-address set scoped by `wireguardRef` across all namespaces
 - [ ] Regression test covering peers for one server split across namespaces
 
-### 5.7 Replicate a peer's config Secret into the workload's namespace
+### 5.7 Replicate a peer's config Secret into the workload's namespace ([#31](https://github.com/jacaudi/wireguard-operator/issues/31))
 
 Secrets cannot be mounted across namespaces.
 
 - [ ] Replica kept in sync and removed with the peer
 - [ ] Only the owning pod's namespace receives it
 
-### 5.8 Client sidecar: kernel and userspace paths as a native sidecar
+### 5.8 Client sidecar: kernel and userspace paths as a native sidecar ([#32](https://github.com/jacaudi/wireguard-operator/issues/32))
 
 An init container that exits cannot hold a userspace tunnel — `wireguard-go` is a
 process, and the interface dies with it. Since userspace fallback is a headline feature,
@@ -451,14 +451,14 @@ ahead of app containers and clean teardown.
 - [ ] Works with the kernel module and with userspace fallback
 - [ ] App containers do not start before the tunnel is up
 
-### 5.9 In-pod egress lockdown for injected clients
+### 5.9 In-pod egress lockdown for injected clients ([#33](https://github.com/jacaudi/wireguard-operator/issues/33))
 
 - [ ] Non-tunnel egress dropped inside the pod
 - [ ] WireGuard's own fwmark-tagged output excepted, or the rules strangle the tunnel
 - [ ] IPv6 denied explicitly
 - [ ] Cluster DNS and a configurable in-cluster allow list still reachable
 
-### 5.10 Operator-generated CNI network policy for injected clients
+### 5.10 Operator-generated CNI network policy for injected clients ([#34](https://github.com/jacaudi/wireguard-operator/issues/34))
 
 The layer that survives sidecar crash or `wg0` teardown, because it is enforced outside
 the pod. In Cilium, an endpoint with any egress rule is default-deny for egress, so the
@@ -476,11 +476,11 @@ DNS only), with per-workload policies adding narrow allows.
 
 ## Phase 6 — Project
 
-### 6.1 Docs and examples
+### 6.1 Docs and examples ([#35](https://github.com/jacaudi/wireguard-operator/issues/35))
 
 Worked examples for each of the three client paths, gluetun setup, and the implicit
 client flow.
 
-### 6.2 Fork housekeeping
+### 6.2 Fork housekeeping ([#36](https://github.com/jacaudi/wireguard-operator/issues/36))
 
 The Go module path is still `github.com/nccloud/wireguard-operator`.
