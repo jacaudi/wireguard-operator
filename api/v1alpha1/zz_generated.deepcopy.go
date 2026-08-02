@@ -342,6 +342,11 @@ func (in *WireguardSpec) DeepCopyInto(out *WireguardSpec) {
 			(*out)[key] = val
 		}
 	}
+	if in.PersistentKeepalive != nil {
+		in, out := &in.PersistentKeepalive, &out.PersistentKeepalive
+		*out = new(int32)
+		**out = **in
+	}
 	if in.NodeSelector != nil {
 		in, out := &in.NodeSelector, &out.NodeSelector
 		*out = make(map[string]string, len(*in))
