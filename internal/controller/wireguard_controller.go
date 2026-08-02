@@ -40,19 +40,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
-	port                 = 51820
-	httpPort             = 8080
-	metricsPort          = 9586
-	defaultTunnelPort    = 443
-	defaultWstunnelImage = "ghcr.io/erebe/wstunnel:latest"
-
 	// defaultPersistentKeepalive is the fallback keepalive interval, in seconds, used when
 	// Wireguard.Spec.PersistentKeepalive is nil. The value users actually receive comes from
 	// the CRD default; this only covers objects stored before the field existed.
@@ -79,24 +72,6 @@ type WireguardReconciler struct {
 	deploymentBuilder *resources.DeploymentBuilder
 	configMapBuilder  *resources.ConfigMapBuilder
 	ipAllocator       *ipam.Allocator
-}
-
-func labelsForWireguard(name string) map[string]string {
-	return resources.LabelsForWireguard(name)
-}
-
-func (r *WireguardReconciler) ConfigmapForWireguard(m *v1alpha1.Wireguard, hostname string) *corev1.ConfigMap {
-	ls := labelsForWireguard(m.Name)
-	dep := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      m.Name + "-config",
-			Namespace: m.Namespace,
-			Labels:    ls,
-		},
-	}
-
-	_ = ctrl.SetControllerReference(m, dep, r.Scheme)
-	return dep
 }
 
 func (r *WireguardReconciler) getWireguardPeers(ctx context.Context, req ctrl.Request) (*v1alpha1.WireguardPeerList, error) {
@@ -352,7 +327,7 @@ DNS = %s`, strings.TrimSpace(string(v)), addressLine, dnsConfiguration)
 				if wireguard.Spec.Tunnel.Enabled {
 					tunnelPort := wireguard.Spec.Tunnel.Port
 					if tunnelPort == 0 {
-						tunnelPort = defaultTunnelPort
+						tunnelPort = resources.DefaultTunnelPort
 					}
 
 					// Tunnel config with PreUp/PostDown hooks
@@ -364,7 +339,7 @@ PostDown = killall wstunnel || true
 PublicKey = %s
 AllowedIPs = %s
 Endpoint = 127.0.0.1:%d
-%s`, port, port, serverAddress, tunnelPort, serverPublicKey, allowIps, port, keepaliveLine)
+%s`, resources.WireguardPort, resources.WireguardPort, serverAddress, tunnelPort, serverPublicKey, allowIps, resources.WireguardPort, keepaliveLine)
 
 					if wireguard.Spec.Tunnel.DualMode {
 						// In dual mode, store both configs:
@@ -515,7 +490,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	err = r.Get(ctx, types.NamespacedName{Name: wireguard.Name + "-metrics-svc", Namespace: wireguard.Namespace}, svcFound)
 	if err != nil && errors.IsNotFound(err) {
 
-		svc := r.serviceForWireguardMetrics(wireguard)
+		svc, err := r.serviceBuilder.ForWireguardMetrics(wireguard)
+		if err != nil {
+			log.Error(err, "Failed to build metrics service", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, err
+		}
 		log.Info("Creating a new service", "service.Namespace", svc.Namespace, "service.Name", svc.Name)
 		err = r.Create(ctx, svc)
 		if err != nil {
@@ -573,7 +552,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	err = r.Get(ctx, types.NamespacedName{Name: wireguard.Name + "-svc", Namespace: wireguard.Namespace}, svcFound)
 	if err != nil && errors.IsNotFound(err) {
-		svc := r.serviceForWireguard(wireguard, serviceType)
+		svc, err := r.serviceBuilder.ForWireguard(wireguard, serviceType)
+		if err != nil {
+			log.Error(err, "Failed to build service", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, err
+		}
 		log.Info("Creating a new service", "service.Namespace", svc.Namespace, "service.Name", svc.Name)
 		err = r.Create(ctx, svc)
 		if err != nil {
@@ -598,7 +581,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Update service ports if tunnel configuration changed.
 	// Compare port count and port numbers to detect tunnel/dualMode toggling.
 	{
-		desiredSvc := r.serviceForWireguard(wireguard, serviceType)
+		desiredSvc, err := r.serviceBuilder.ForWireguard(wireguard, serviceType)
+		if err != nil {
+			log.Error(err, "Failed to build service", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, err
+		}
 		needsUpdate := len(svcFound.Spec.Ports) != len(desiredSvc.Spec.Ports)
 		if !needsUpdate && len(svcFound.Spec.Ports) > 0 {
 			if svcFound.Spec.Ports[0].Port != desiredSvc.Spec.Ports[0].Port {
@@ -621,11 +608,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Compute the effective external port (tunnel port when enabled, WG port otherwise)
-	var port = fmt.Sprintf("%d", port)
+	var port = fmt.Sprintf("%d", resources.WireguardPort)
 	if wireguard.Spec.Tunnel.Enabled {
 		tp := wireguard.Spec.Tunnel.Port
 		if tp == 0 {
-			tp = defaultTunnelPort
+			tp = resources.DefaultTunnelPort
 		}
 		port = fmt.Sprintf("%d", tp)
 	}
@@ -733,8 +720,12 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			log.Info("Updating secret with new config")
 			publicKey := string(secret.Data["publicKey"])
 
-			err := r.Update(ctx, r.secretForWireguard(wireguard, b, privateKey, publicKey))
+			updatedSecret, err := r.secretBuilder.ForWireguard(wireguard, b, privateKey, publicKey)
 			if err != nil {
+				log.Error(err, "Failed to build secret with new config")
+				return ctrl.Result{}, err
+			}
+			if err := r.Update(ctx, updatedSecret); err != nil {
 				log.Error(err, "Failed to update secret with new config")
 				return ctrl.Result{}, err
 			}
@@ -790,7 +781,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 
-		secret := r.secretForWireguard(wireguard, b, privateKey, publicKey)
+		secret, err := r.secretBuilder.ForWireguard(wireguard, b, privateKey, publicKey)
+		if err != nil {
+			log.Error(err, "Failed to build secret", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, err
+		}
 
 		log.Info("Creating a new secret", "secret.Namespace", secret.Namespace, "secret.Name", secret.Name)
 
@@ -809,7 +804,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	configFound := &corev1.ConfigMap{}
 	err = r.Get(ctx, types.NamespacedName{Name: wireguard.Name + "-config", Namespace: wireguard.Namespace}, configFound)
 	if err != nil && errors.IsNotFound(err) {
-		config := r.ConfigmapForWireguard(wireguard, address)
+		config, err := r.configMapBuilder.ForWireguard(wireguard)
+		if err != nil {
+			log.Error(err, "Failed to build configmap", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, err
+		}
 		log.Info("Creating a new config", "config.Namespace", config.Namespace, "config.Name", config.Name)
 		err = r.Create(ctx, config)
 		if err != nil {
@@ -830,7 +829,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	deploymentFound := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: wireguard.Name + "-dep", Namespace: wireguard.Namespace}, deploymentFound)
 	if err != nil && errors.IsNotFound(err) {
-		dep := r.deploymentForWireguard(wireguard)
+		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
+		if buildErr != nil {
+			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, buildErr
+		}
 		log.Info("Creating a new dep", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name, "useUserspace", wireguard.Spec.UseWgUserspaceImplementation)
 		err = r.Create(ctx, dep)
 		if err != nil {
@@ -845,7 +848,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	if deploymentFound.Spec.Template.Spec.Containers[0].Image != r.AgentImage {
-		dep := r.deploymentForWireguard(wireguard)
+		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
+		if buildErr != nil {
+			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, buildErr
+		}
 		err = r.Update(ctx, dep)
 		if err != nil {
 			log.Error(err, "unable to update deployment image", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name)
@@ -866,7 +873,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	if existingUserspace != desiredUserspace {
 		log.Info("Updating deployment userspace flag", "desired", desiredUserspace, "existing", existingUserspace)
-		dep := r.deploymentForWireguard(wireguard)
+		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
+		if buildErr != nil {
+			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, buildErr
+		}
 		if err := r.Update(ctx, dep); err != nil {
 			log.Error(err, "unable to update deployment userspace flag", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name)
 			return ctrl.Result{}, err
@@ -883,7 +894,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	if hasWstunnel != wireguard.Spec.Tunnel.Enabled {
 		log.Info("Updating deployment tunnel sidecar", "desired", wireguard.Spec.Tunnel.Enabled, "existing", hasWstunnel)
-		dep := r.deploymentForWireguard(wireguard)
+		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
+		if buildErr != nil {
+			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, buildErr
+		}
 		if err := r.Update(ctx, dep); err != nil {
 			log.Error(err, "unable to update deployment tunnel sidecar", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name)
 			return ctrl.Result{}, err
@@ -894,7 +909,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !reflect.DeepEqual(deploymentFound.Spec.Template.Spec.NodeSelector, wireguard.Spec.NodeSelector) ||
 		!reflect.DeepEqual(deploymentFound.Spec.Template.Spec.Tolerations, wireguard.Spec.Tolerations) {
 		log.Info("Updating deployment scheduling settings")
-		dep := r.deploymentForWireguard(wireguard)
+		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
+		if buildErr != nil {
+			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
+			return ctrl.Result{}, buildErr
+		}
 		if err := r.Update(ctx, dep); err != nil {
 			log.Error(err, "unable to update deployment scheduling settings", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name)
 			return ctrl.Result{}, err
@@ -1032,278 +1051,4 @@ func (r *WireguardReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Secret{}).
 		Complete(r)
-}
-
-func (r *WireguardReconciler) serviceForWireguard(m *v1alpha1.Wireguard, serviceType corev1.ServiceType) *corev1.Service {
-	labels := labelsForWireguard(m.Name)
-
-	svcPorts := []corev1.ServicePort{{
-		Name:       "wireguard",
-		Protocol:   corev1.ProtocolUDP,
-		NodePort:   m.Spec.NodePort,
-		Port:       port,
-		TargetPort: intstr.FromInt(port),
-	}}
-
-	if m.Spec.Tunnel.Enabled {
-		tunnelPort := m.Spec.Tunnel.Port
-		if tunnelPort == 0 {
-			tunnelPort = defaultTunnelPort
-		}
-		tunnelSvcPort := corev1.ServicePort{
-			Name:       "tunnel",
-			Protocol:   corev1.ProtocolTCP,
-			Port:       tunnelPort,
-			TargetPort: intstr.FromInt(int(tunnelPort)),
-		}
-		if m.Spec.Tunnel.DualMode {
-			svcPorts = append(svcPorts, tunnelSvcPort)
-		} else {
-			svcPorts = []corev1.ServicePort{tunnelSvcPort}
-		}
-	}
-
-	dep := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        m.Name + "-svc",
-			Namespace:   m.Namespace,
-			Annotations: m.Spec.ServiceAnnotations,
-			Labels:      labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: labels,
-			Ports:    svcPorts,
-			Type:     serviceType,
-		},
-	}
-
-	if dep.Spec.Type == corev1.ServiceTypeLoadBalancer {
-		if m.Spec.Address != "" {
-			dep.Spec.LoadBalancerIP = m.Spec.Address
-		}
-	}
-
-	_ = ctrl.SetControllerReference(m, dep, r.Scheme)
-	return dep
-}
-
-func (r *WireguardReconciler) serviceForWireguardMetrics(m *v1alpha1.Wireguard) *corev1.Service {
-	labels := labelsForWireguard(m.Name)
-
-	dep := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      m.Name + "-metrics-svc",
-			Namespace: m.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: labels,
-			Ports: []corev1.ServicePort{{
-				Name:       "metrics",
-				Protocol:   corev1.ProtocolTCP,
-				Port:       metricsPort,
-				TargetPort: intstr.FromInt(metricsPort),
-			}},
-			Type: corev1.ServiceTypeClusterIP,
-		},
-	}
-
-	_ = ctrl.SetControllerReference(m, dep, r.Scheme)
-	return dep
-}
-
-func (r *WireguardReconciler) secretForWireguard(m *v1alpha1.Wireguard, state []byte, privateKey string, publicKey string) *corev1.Secret {
-
-	ls := labelsForWireguard(m.Name)
-	dep := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      m.Name,
-			Namespace: m.Namespace,
-			Labels:    ls,
-		},
-		Data: map[string][]byte{"state.json": state, "privateKey": []byte(privateKey), "publicKey": []byte(publicKey)},
-	}
-
-	_ = ctrl.SetControllerReference(m, dep, r.Scheme)
-
-	return dep
-
-}
-
-func (r *WireguardReconciler) deploymentForWireguard(m *v1alpha1.Wireguard) *appsv1.Deployment {
-	ls := labelsForWireguard(m.Name)
-	replicas := int32(1)
-
-	readOnlyRootFilesystem := true
-	allowPrivilegeEscalation := false
-	automountServiceAccountToken := false
-
-	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      m.Name + "-dep",
-			Namespace: m.Namespace,
-			Labels:    ls,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: ls,
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: ls,
-				},
-				Spec: corev1.PodSpec{
-					NodeSelector: m.Spec.NodeSelector,
-					Tolerations:  m.Spec.Tolerations,
-					SecurityContext: &corev1.PodSecurityContext{
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileType("RuntimeDefault"),
-						},
-					},
-					AutomountServiceAccountToken: &automountServiceAccountToken,
-					Volumes: []corev1.Volume{
-						{
-							Name: "socket",
-							VolumeSource: corev1.VolumeSource{
-
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-						{
-
-							Name: "config",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName: m.Name,
-								},
-							},
-						}},
-					InitContainers: []corev1.Container{},
-					Containers: []corev1.Container{
-						{
-							SecurityContext: &corev1.SecurityContext{
-								ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
-								AllowPrivilegeEscalation: &allowPrivilegeEscalation,
-								Capabilities:             &corev1.Capabilities{Add: []corev1.Capability{"NET_ADMIN"}},
-							},
-							Image:           r.AgentImage,
-							ImagePullPolicy: r.AgentImagePullPolicy,
-							Name:            "agent",
-							Command:         []string{"agent", "--v", "11", "--wg-iface", "wg0", "--wg-listen-port", fmt.Sprintf("%d", port), "--state", "/tmp/wireguard/state.json", "--wg-userspace-implementation-fallback", "wireguard-go"},
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: port,
-									Name:          "wireguard",
-									Protocol:      corev1.ProtocolUDP,
-								},
-								{
-									ContainerPort: port,
-									Name:          "http",
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
-							EnvFrom: []corev1.EnvFromSource{{
-								ConfigMapRef: &corev1.ConfigMapEnvSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: m.Name + "-config"},
-								},
-							}},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Port: intstr.FromInt(httpPort),
-										Path: "/health",
-									},
-								},
-							},
-							LivenessProbe: &corev1.Probe{
-								PeriodSeconds: 5,
-								ProbeHandler: corev1.ProbeHandler{
-									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt(httpPort),
-									},
-								},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "socket",
-									MountPath: "/var/run/wireguard/",
-								},
-								{
-									Name:      "config",
-									MountPath: "/tmp/wireguard/",
-								}},
-							Resources: m.Spec.Agent.Resources,
-						}},
-				},
-			},
-		},
-	}
-
-	if m.Spec.Tunnel.Enabled {
-		image := m.Spec.Tunnel.Image
-		if image == "" {
-			image = defaultWstunnelImage
-		}
-		tunnelPort := m.Spec.Tunnel.Port
-		if tunnelPort == 0 {
-			tunnelPort = defaultTunnelPort
-		}
-		dep.Spec.Template.Spec.Containers = append(dep.Spec.Template.Spec.Containers,
-			corev1.Container{
-				SecurityContext: &corev1.SecurityContext{
-					ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
-					AllowPrivilegeEscalation: &allowPrivilegeEscalation,
-				},
-				Image: image,
-				Name:  "wstunnel",
-				Command: []string{
-					"/usr/bin/dumb-init", "--",
-					"/home/app/wstunnel", "server",
-					"--restrict-to", fmt.Sprintf("127.0.0.1:%d", port),
-					fmt.Sprintf("wss://0.0.0.0:%d", tunnelPort),
-				},
-				Ports: []corev1.ContainerPort{
-					{
-						ContainerPort: tunnelPort,
-						Name:          "tunnel",
-						Protocol:      corev1.ProtocolTCP,
-					},
-				},
-				ReadinessProbe: &corev1.Probe{
-					ProbeHandler: corev1.ProbeHandler{
-						TCPSocket: &corev1.TCPSocketAction{
-							Port: intstr.FromInt(int(tunnelPort)),
-						},
-					},
-				},
-				Resources: m.Spec.Tunnel.Resources,
-			})
-	}
-
-	if m.Spec.EnableIpForwardOnPodInit {
-		privileged := true
-		dep.Spec.Template.Spec.InitContainers = append(dep.Spec.Template.Spec.InitContainers,
-			corev1.Container{
-				SecurityContext: &corev1.SecurityContext{
-					Privileged: &privileged,
-				},
-				Image:           r.AgentImage,
-				ImagePullPolicy: r.AgentImagePullPolicy,
-				Name:            "sysctl",
-				Command:         []string{"/bin/sh"},
-				Args:            []string{"-c", "echo 1 > /proc/sys/net/ipv4/ip_forward"},
-			})
-	}
-
-	if m.Spec.UseWgUserspaceImplementation {
-		for i, c := range dep.Spec.Template.Spec.Containers {
-			if c.Name == "agent" {
-				dep.Spec.Template.Spec.Containers[i].Command = append(dep.Spec.Template.Spec.Containers[i].Command, "--wg-use-userspace-implementation")
-			}
-		}
-	}
-
-	_ = ctrl.SetControllerReference(m, dep, r.Scheme)
-	return dep
 }
