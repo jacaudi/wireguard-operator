@@ -52,6 +52,11 @@ const (
 	metricsPort          = 9586
 	defaultTunnelPort    = 443
 	defaultWstunnelImage = "ghcr.io/erebe/wstunnel:latest"
+
+	// defaultPersistentKeepalive is the fallback keepalive interval, in seconds, used when
+	// Wireguard.Spec.PersistentKeepalive is nil. The value users actually receive comes from
+	// the CRD default; this only covers objects stored before the field existed.
+	defaultPersistentKeepalive = 25
 )
 
 // Standard condition types for Wireguard
@@ -204,7 +209,25 @@ func effectivePeerCIDR6(wg *v1alpha1.Wireguard) (string, bool) {
 	return wg.Spec.PeerCIDRv6, true
 }
 
+// persistentKeepalive returns the keepalive interval to write into peer configs.
+// A nil value means the field was absent — either the object predates the field or
+// defaulting is disabled — so fall back to the default rather than to zero, which
+// WireGuard interprets as "disabled".
+func persistentKeepalive(wg *v1alpha1.Wireguard) int32 {
+	if wg.Spec.PersistentKeepalive == nil {
+		return defaultPersistentKeepalive
+	}
+	return *wg.Spec.PersistentKeepalive
+}
+
 func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl.Request, wireguard *v1alpha1.Wireguard, serverAddress string, dns string, dnsSearchDomain string, serverPublicKey string, serverMtu string) error {
+	// Rendered once and interpolated into every config flavor below. Empty when the
+	// interval is 0, so the line is omitted rather than written as an explicit zero.
+	keepaliveLine := ""
+	if ka := persistentKeepalive(wireguard); ka > 0 {
+		keepaliveLine = fmt.Sprintf("PersistentKeepalive = %d\n", ka)
+	}
+
 	peers, err := r.getWireguardPeers(ctx, req)
 	if err != nil {
 		return err
@@ -341,7 +364,7 @@ PostDown = killall wstunnel || true
 PublicKey = %s
 AllowedIPs = %s
 Endpoint = 127.0.0.1:%d
-`, port, port, serverAddress, tunnelPort, serverPublicKey, allowIps, port)
+%s`, port, port, serverAddress, tunnelPort, serverPublicKey, allowIps, port, keepaliveLine)
 
 					if wireguard.Spec.Tunnel.DualMode {
 						// In dual mode, store both configs:
@@ -353,7 +376,7 @@ Endpoint = 127.0.0.1:%d
 PublicKey = %s
 AllowedIPs = %s
 Endpoint = %s:%s
-`, serverPublicKey, allowIps, serverAddress, wireguard.Status.Port)
+%s`, serverPublicKey, allowIps, serverAddress, wireguard.Status.Port, keepaliveLine)
 						newPeerCfgData[peer.Name] = []byte(directCfg)
 						newPeerCfgData[peer.Name+".tunnel"] = []byte(tunnelCfg)
 					} else {
@@ -367,7 +390,7 @@ Endpoint = %s:%s
 PublicKey = %s
 AllowedIPs = %s
 Endpoint = %s:%s
-`, serverPublicKey, allowIps, serverAddress, wireguard.Status.Port)
+%s`, serverPublicKey, allowIps, serverAddress, wireguard.Status.Port, keepaliveLine)
 					newPeerCfgData[peer.Name] = []byte(pureCfg)
 				}
 			}

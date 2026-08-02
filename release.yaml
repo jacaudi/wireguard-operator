@@ -479,6 +479,17 @@ spec:
                   PeerCIDRv6 is the IPv6 CIDR range from which Wireguard peer IPv6 addresses will be allocated.
                   When set, IPv6 support is enabled for this Wireguard instance.
                 type: string
+              persistentKeepalive:
+                default: 25
+                description: |-
+                  PersistentKeepalive is the interval in seconds at which peers send keepalive packets
+                  to the server. This keeps NAT and conntrack entries alive so the server can reach the
+                  peer, and makes the peer re-handshake promptly after the server pod is rescheduled.
+                  Set to 0 to disable. Defaults to 25.
+                format: int32
+                maximum: 65535
+                minimum: 0
+                type: integer
               port:
                 description: A field that specifies the value to use for a nodePort
                   ServiceType

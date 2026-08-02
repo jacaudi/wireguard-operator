@@ -78,7 +78,11 @@ MTU = 1380
 PublicKey = sO3ZWhnIT8owcdsfwiMRu2D8LzKmae2gUAxAmhx5GTg=
 AllowedIPs = 0.0.0.0/0
 Endpoint = 32.121.45.102:51820
+PersistentKeepalive = 25
 ```
+
+`PersistentKeepalive` defaults to 25 seconds and is configurable through
+`Wireguard.Spec.PersistentKeepalive`. Set it to `0` to omit it.
 
 ## How to deploy
 ### Using provided manifest file
