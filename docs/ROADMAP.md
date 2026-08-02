@@ -406,7 +406,7 @@ Cleanup must be an explicit controller reaping orphans.
 
 All peer configs currently land in one `<wg-name>-peer-configs` Secret keyed by peer name
 (`wireguard_controller.go:229`), containing **every peer's private key**. Mounting that
-into an app pod would hand it every other peer's credentials.
+into a workload pod would hand it every other peer's credentials.
 
 - [ ] Each peer's config available in its own Secret
 - [ ] Injected pods mount only their own
@@ -416,8 +416,8 @@ into an app pod would hand it every other peer's credentials.
 
 `wireguardpeer_controller.go:167` resolves `spec.wireguardRef` in the peer's own
 namespace. Add an optional namespace, and gate attachment on the server opting in
-(`spec.allowedPeerNamespaces`) — otherwise any namespace can attach itself to the VPN
-and egress through a paid tunnel.
+(`spec.allowedPeerNamespaces`) — otherwise any namespace can attach itself to the
+gateway and egress through its upstream tunnel.
 
 - [ ] Attachment requires both the peer naming the server and the server permitting the
       namespace
