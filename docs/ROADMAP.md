@@ -148,18 +148,20 @@ nor blocks them. The killswitch does not interfere with port forwarding.
 
 Blocks everything else.
 
-### 0.1 Consolidate the two divergent Deployment builders ([#1](https://github.com/jacaudi/wireguard-operator/issues/1))
+### 0.1 Consolidate resource rendering onto internal/resources builders ([#1](https://github.com/jacaudi/wireguard-operator/issues/1))
 
-Two paths render the Deployment and the newer one is dead code.
-`internal/resources/deployment.go:54` (`DeploymentBuilder.ForWireguard`) is constructed
-at `internal/controller/wireguard_controller.go:1000` but never called; the live path is
-`deploymentForWireguard` at `:1110`, called from `:810`, `:825`, `:846`, `:863`, `:874`.
-They have already drifted — the unused one adds a `metrics` port and uses `HTTPPort`.
+The whole `internal/resources` package is dead code. All four builders are constructed in
+`SetupWithManager` but no method is ever called — every resource is rendered by an inline
+function on the reconciler instead. Twelve call sites across the two controllers, six
+inline functions, and a duplicated set of port and image constants.
 
-Every feature below touches Deployment rendering. Implementing in `internal/resources`
-alone would have no runtime effect.
+The two copies have already drifted: the unused `DeploymentBuilder` declares a `metrics`
+container port the live path lacks.
 
-- [ ] Exactly one function renders the Deployment
+Every feature below touches this rendering. Implementing in `internal/resources` alone
+would have no runtime effect at all.
+
+- [ ] Exactly one function renders each resource type
 - [ ] Drift resolved intentionally, not by arbitrarily picking a copy
 - [ ] Existing controller tests pass unchanged
 
