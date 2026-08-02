@@ -5,7 +5,7 @@ Painless deployment of wireguard on kubernetes
 
 ## Support
 
-If you are facing any problems please open an [issue](https://github.com/nccloud/wireguard-operator/issues)
+If you are facing any problems please open an [issue](https://github.com/jacaudi/wireguard-operator/issues)
 
 ## Tested with
 - [x] IBM Cloud Kubernetes Service
@@ -32,6 +32,8 @@ If you are facing any problems please open an [issue](https://github.com/nccloud
 * Does not need persistance. peer/server keys are stored as k8s secrets and loaded into the wireguard pod
 * Exposes a metrics endpoint
 * Supports tunneling/traffic obfuscation using [wstunnel](https://github.com/erebe/wstunnel)
+* IPv6 support, including IPv6-only peers, through `spec.peerCIDRv6` and `spec.ipv6Only`
+* Per-peer egress network policies through `WireguardPeer.spec.egressNetworkPolicies`
 
 ## Example
 
@@ -85,6 +87,13 @@ PersistentKeepalive = 25
 `Wireguard.Spec.PersistentKeepalive`. Set it to `0` to omit it.
 
 ## How to deploy
+
+> **Note:** this fork has not cut its own release yet, so the commands below install the
+> upstream `nccloud` operator, which is diverging from this fork. Features added here —
+> `spec.persistentKeepalive`, for example — will not exist in that build. Until a release
+> is published (tracked in [#36](https://github.com/jacaudi/wireguard-operator/issues/36)),
+> deploy from source with `make deploy`.
+
 ### Using provided manifest file
 ```
 kubectl apply -f https://github.com/nccloud/wireguard-operator/releases/download/v2.11.0/release.yaml
