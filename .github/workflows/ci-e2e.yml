@@ -1,0 +1,43 @@
+# Stage c — end-to-end against a kind cluster. This is the operator's equivalent
+# of a smoke test: a container that merely starts proves nothing here, since the
+# thing under test is reconciliation against a real API server.
+name: ci-e2e
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    env:
+      MANAGER_IMAGE: wireguard-operator/manager:test
+      AGENT_IMAGE: wireguard-operator/agent:test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: true
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4.0.1
+
+      - name: Build test images
+        # Local single-arch images loaded into kind; these are never pushed, so
+        # the multi-arch build in ci-build.yml is deliberately not reused here.
+        run: make docker-build-integration-test
+
+      - name: Create kind cluster
+        run: make kind
+
+      - name: Run e2e
+        run: make run-e2e AGENT_IMAGE="${AGENT_IMAGE}" MANAGER_IMAGE="${MANAGER_IMAGE}"

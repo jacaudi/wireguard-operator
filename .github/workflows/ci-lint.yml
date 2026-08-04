@@ -1,0 +1,112 @@
+# Stage a — static analysis. Commands run directly; no Task or Make indirection.
+name: ci-lint
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  # renovate: datasource=github-releases depName=golangci/golangci-lint
+  GOLANGCI_VERSION: 2.12.2
+  # renovate: datasource=github-releases depName=rhysd/actionlint
+  ACTIONLINT_VERSION: 1.7.12
+  # renovate: datasource=github-releases depName=hadolint/hadolint
+  HADOLINT_VERSION: 2.15.1
+  # renovate: datasource=go depName=golang.org/x/vuln
+  GOVULNCHECK_VERSION: v1.1.4
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # 0, not 2: actionlint only runs when workflows changed, which is a
+          # diff against the base. Depth 2 sees one commit, so a push whose
+          # workflow edit was not the final commit would silently skip it.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install golangci-lint
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_VERSION}/golangci-lint-${GOLANGCI_VERSION}-linux-amd64.tar.gz" \
+            | sudo tar xz --strip-components=1 -C /usr/local/bin "golangci-lint-${GOLANGCI_VERSION}-linux-amd64/golangci-lint"
+          golangci-lint --version
+
+      - name: golangci-lint
+        run: golangci-lint run
+
+      - name: Check formatting
+        run: golangci-lint fmt --diff
+
+      - name: Check go.mod is tidy
+        # -diff exits non-zero on drift; a bare `go mod tidy` would MUTATE go.mod in CI
+        run: go mod tidy -diff
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Install govulncheck
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+
+      - name: govulncheck
+        run: govulncheck ./...
+
+      - name: "Assert local workflow references resolve"
+        # A local reference pointing at a file that does not exist fails only at
+        # run time, on the branch that changed it. Catch it here instead.
+        #
+        # The awk skips comment lines. Without that, prose in a comment that
+        # happens to contain the reference syntax is read as a live reference —
+        # which broke this very check while it was being written.
+        run: |
+          set -euo pipefail
+          fail=0
+          files=$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \))
+          refs=$(awk '/^[[:space:]]*#/ {next}
+                 /uses:[[:space:]]*\.\//{
+                   sub(/.*uses:[[:space:]]*/,""); sub(/[[:space:]]*#.*/,""); sub(/[[:space:]]*$/,""); print
+                 }' ${files} | sort -u)
+          for ref in ${refs}; do
+            case "${ref}" in
+              *.yml|*.yaml) [ -f "${ref#./}" ] || { echo "MISSING workflow: ${ref}"; fail=1; } ;;
+              *)
+                d="${ref#./}"
+                if [ ! -f "${d}/action.yml" ] && [ ! -f "${d}/action.yaml" ]; then
+                  echo "MISSING action:   ${ref}"; fail=1
+                fi ;;
+            esac
+          done
+          [ "${fail}" = "0" ] || { echo "::error::a local uses: reference points at nothing"; exit 1; }
+          echo "local uses: references ok"
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin actionlint
+          actionlint --version
+
+      - name: actionlint
+        run: actionlint
+
+      - name: Install hadolint
+        run: |
+          set -euo pipefail
+          sudo curl -sSfLo /usr/local/bin/hadolint \
+            "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64"
+          sudo chmod +x /usr/local/bin/hadolint
+          hadolint --version
+
+      - name: hadolint
+        run: find images -name 'Dockerfile*' -print0 | xargs -0 --no-run-if-empty hadolint

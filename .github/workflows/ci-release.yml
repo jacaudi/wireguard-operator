@@ -1,0 +1,59 @@
+# Stage e — release-please; exposes release_created so the image builds off the
+# OUTPUT rather than a tag push, which GITHUB_TOKEN cannot trigger anyway.
+name: ci-release
+
+on:
+  workflow_call:
+    secrets:
+      APP_ID:
+        description: GitHub App id, so the release PR triggers CI and is attributed to the App
+        required: false
+      APP_PRIVATE_KEY:
+        description: Private key for the above App
+        required: false
+    outputs:
+      release_created:
+        description: '"true" when release-please cut a release on this run'
+        value: ${{ jobs.release.outputs.release_created }}
+      tag_name:
+        description: Tag created (e.g. v1.2.3); empty when none
+        value: ${{ jobs.release.outputs.tag_name }}
+      version:
+        description: Version released (e.g. 1.2.3); empty when none
+        value: ${{ jobs.release.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      APP_ID: ${{ secrets.APP_ID }}
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+      version: ${{ steps.rp.outputs.version }}
+    steps:
+      - name: Generate a GitHub App token
+        id: app-token
+        if: ${{ env.APP_ID != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Run release-please
+        id: rp
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          # Without an App token the release PR is opened by GITHUB_TOKEN, which
+          # cannot trigger workflows — `ci` never reports on it and the PR is
+          # unmergeable under branch protection. See README#github-app-handling.
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

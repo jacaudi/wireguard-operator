@@ -1,0 +1,51 @@
+# Stage f — the installable manifest. This repo's releases carry release.yaml as
+# an asset (the README's install instructions curl it), so unlike a plain service
+# repo the image is not the whole release.
+name: ci-artifact
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release tag the manifest should pin images to (e.g. v1.2.3).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  artifact:
+    name: release manifest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # to upload the asset onto the release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.version }}   # the tag, not this run's commit
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Generate release.yaml
+        env:
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          repo_lc="$(printf '%s' "${REPO}" | tr '[:upper:]' '[:lower:]')"
+          make generate-release-file \
+            AGENT_IMAGE="ghcr.io/${repo_lc}/agent:${VERSION}" \
+            MANAGER_IMAGE="ghcr.io/${repo_lc}/manager:${VERSION}"
+          test -s release.yaml || { echo "::error::release.yaml was not produced"; exit 1; }
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: gh release upload "${VERSION}" release.yaml --clobber

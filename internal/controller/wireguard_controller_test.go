@@ -84,6 +84,31 @@ func reconcileServiceWithClusterIP(svcKey client.ObjectKey, port int32) error {
 	return k8sClient.Update(context.Background(), svc)
 }
 
+// peerConfigLines returns the lines of a rendered peer config that start with prefix.
+// It returns nil when the aggregated secret or the peer's key is missing, so an absence
+// assertion must first establish that the config was rendered at all — otherwise a
+// missing secret would satisfy it vacuously.
+func peerConfigLines(wgName, namespace, peerKey, prefix string) []string {
+	secret := &corev1.Secret{}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      wgName + "-peer-configs",
+		Namespace: namespace,
+	}, secret); err != nil {
+		return nil
+	}
+	data, ok := secret.Data[peerKey]
+	if !ok {
+		return nil
+	}
+	var matched []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			matched = append(matched, line)
+		}
+	}
+	return matched
+}
+
 var _ = Describe("wireguard controller", func() {
 
 	// Define utility constants for object names and testing timeouts/durations and intervals.
@@ -1455,6 +1480,98 @@ var _ = Describe("wireguard controller", func() {
 				}, Timeout, Interval).Should(matcher)
 			})
 		}
+	})
+
+	Context("PersistentKeepalive", func() {
+
+		// Brings up a Wireguard with the given spec plus one peer, reconciles its
+		// LoadBalancer service, and returns the peer's key in the aggregated config secret.
+		createWireguardWithPeer := func(spec v1alpha1.WireguardSpec) string {
+			wgServer := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      wgKey.Name,
+					Namespace: wgKey.Namespace,
+				},
+				Spec: spec,
+			}
+			Expect(k8sClient.Create(context.Background(), wgServer)).Should(Succeed())
+
+			peerName := wgName + "-peer1"
+			wgPeer := &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      peerName,
+					Namespace: wgNamespace,
+				},
+				Spec: v1alpha1.WireguardPeerSpec{
+					WireguardRef: wgName,
+				},
+			}
+			Expect(k8sClient.Create(context.Background(), wgPeer)).Should(Succeed())
+
+			serviceKey := types.NamespacedName{
+				Namespace: wgKey.Namespace,
+				Name:      wgKey.Name + "-svc",
+			}
+			expectedLabels := map[string]string{"app": "wireguard", "instance": wgKey.Name}
+			Eventually(func() map[string]string {
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
+					return map[string]string{}
+				}
+				return svc.Spec.Selector
+			}, Timeout, Interval).Should(BeEquivalentTo(expectedLabels))
+
+			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, "test-address")).Should(Succeed())
+
+			return peerName
+		}
+
+		It("defaults PersistentKeepalive to 25 when unset", func() {
+			peerName := createWireguardWithPeer(v1alpha1.WireguardSpec{})
+
+			Eventually(func() []string {
+				return peerConfigLines(wgName, wgNamespace, peerName, "PersistentKeepalive")
+			}, Timeout, Interval).Should(Equal([]string{"PersistentKeepalive = 25"}))
+		})
+
+		It("uses the configured PersistentKeepalive interval", func() {
+			keepalive := int32(15)
+			peerName := createWireguardWithPeer(v1alpha1.WireguardSpec{PersistentKeepalive: &keepalive})
+
+			Eventually(func() []string {
+				return peerConfigLines(wgName, wgNamespace, peerName, "PersistentKeepalive")
+			}, Timeout, Interval).Should(Equal([]string{"PersistentKeepalive = 15"}))
+		})
+
+		It("renders keepalive in the tunnel and dual-mode direct configs", func() {
+			peerName := createWireguardWithPeer(v1alpha1.WireguardSpec{
+				Tunnel: v1alpha1.TunnelSpec{Enabled: true, DualMode: true},
+			})
+
+			// Dual mode stores the direct config under the peer name and the
+			// wstunnel config under "<peer>.tunnel". Both are separate templates,
+			// so both need asserting.
+			Eventually(func() []string {
+				return peerConfigLines(wgName, wgNamespace, peerName, "PersistentKeepalive")
+			}, Timeout, Interval).Should(Equal([]string{"PersistentKeepalive = 25"}))
+
+			Eventually(func() []string {
+				return peerConfigLines(wgName, wgNamespace, peerName+".tunnel", "PersistentKeepalive")
+			}, Timeout, Interval).Should(Equal([]string{"PersistentKeepalive = 25"}))
+		})
+
+		It("omits PersistentKeepalive entirely when set to 0", func() {
+			keepalive := int32(0)
+			peerName := createWireguardWithPeer(v1alpha1.WireguardSpec{PersistentKeepalive: &keepalive})
+
+			// Establish the config was actually rendered before asserting on absence,
+			// so a missing secret cannot satisfy the assertion vacuously.
+			Eventually(func() []string {
+				return peerConfigLines(wgName, wgNamespace, peerName, "Endpoint")
+			}, Timeout, Interval).Should(HaveLen(1))
+
+			Expect(peerConfigLines(wgName, wgNamespace, peerName, "PersistentKeepalive")).To(BeEmpty())
+		})
 	})
 
 	Context("Tunnel", func() {

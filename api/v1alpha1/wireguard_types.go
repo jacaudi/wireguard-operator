@@ -63,6 +63,15 @@ type WireguardSpec struct {
 	EnableIpForwardOnPodInit bool `json:"enableIpForwardOnPodInit,omitempty"`
 	// A boolean field that specifies whether to use the userspace implementation of Wireguard instead of the kernel one.
 	UseWgUserspaceImplementation bool `json:"useWgUserspaceImplementation,omitempty"`
+	// PersistentKeepalive is the interval in seconds at which peers send keepalive packets
+	// to the server. This keeps NAT and conntrack entries alive so the server can reach the
+	// peer, and makes the peer re-handshake promptly after the server pod is rescheduled.
+	// Set to 0 to disable. Defaults to 25.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=25
+	// +optional
+	PersistentKeepalive *int32 `json:"persistentKeepalive,omitempty"`
 
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 	// A list of Kubernetes taint tolerations applied to the Wireguard pod.

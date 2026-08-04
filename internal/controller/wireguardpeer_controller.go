@@ -21,11 +21,11 @@ import (
 	"fmt"
 
 	"github.com/nccloud/wireguard-operator/api/v1alpha1"
+	"github.com/nccloud/wireguard-operator/internal/resources"
 
 	wgtypes "golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -38,6 +38,8 @@ import (
 type WireguardPeerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	secretBuilder *resources.SecretBuilder
 }
 
 func (r *WireguardPeerReconciler) updateStatus(ctx context.Context, peer *v1alpha1.WireguardPeer, status string, message string) error {
@@ -51,23 +53,6 @@ func (r *WireguardPeerReconciler) updateStatus(ctx context.Context, peer *v1alph
 		}
 	}
 	return nil
-}
-
-func (r *WireguardPeerReconciler) secretForPeer(m *v1alpha1.WireguardPeer, privateKey string, publicKey string) *corev1.Secret {
-	ls := labelsForWireguard(m.Name)
-	dep := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      m.Name + "-peer",
-			Namespace: m.Namespace,
-			Labels:    ls,
-		},
-		Data: map[string][]byte{"privateKey": []byte(privateKey), "publicKey": []byte(publicKey)},
-	}
-	// Set Nodered instance as the owner and controller
-	_ = ctrl.SetControllerReference(m, dep, r.Scheme)
-
-	return dep
-
 }
 
 //+kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguardpeers,verbs=get;list;watch;create;update;patch;delete
@@ -133,7 +118,11 @@ func (r *WireguardPeerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			// Secret does not exist yet — generate new keys and create it.
 			publicKey = key.PublicKey().String()
 
-			secret := r.secretForPeer(peer, key.String(), publicKey)
+			secret, buildErr := r.secretBuilder.ForPeer(peer, key.String(), publicKey)
+			if buildErr != nil {
+				log.Error(buildErr, "Failed to build peer secret", "secret.Name", secretName)
+				return ctrl.Result{}, buildErr
+			}
 			log.Info("Creating a new secret", "secret.Namespace", secret.Namespace, "secret.Name", secret.Name)
 			if err = r.Create(ctx, secret); err != nil {
 				log.Error(err, "Failed to create new secret", "secret.Namespace", secret.Namespace, "secret.Name", secret.Name)
@@ -257,6 +246,8 @@ func (r *WireguardPeerReconciler) checkDuplicateAddress(ctx context.Context, nam
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WireguardPeerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.secretBuilder = resources.NewSecretBuilder(r.Scheme)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.WireguardPeer{}).
 		Complete(r)
