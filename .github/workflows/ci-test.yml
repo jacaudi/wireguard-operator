@@ -1,0 +1,81 @@
+# Stage b — codegen drift gate, then the envtest suite. Commands run directly.
+name: ci-test
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  # Kept in step with the Makefile. Renovate tracks the module versions.
+  # renovate: datasource=go depName=sigs.k8s.io/controller-tools
+  CONTROLLER_TOOLS_VERSION: v0.16.5
+  ENVTEST_K8S_VERSION: "1.30.0"
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install controller-gen
+        run: go install "sigs.k8s.io/controller-tools/cmd/controller-gen@${CONTROLLER_TOOLS_VERSION}"
+
+      - name: Regenerate CRDs, RBAC and deepcopy
+        run: |
+          set -euo pipefail
+          controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+          controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+      - name: Assert generated files are up to date
+        # The generated CRDs and zz_generated.deepcopy.go are committed. If a
+        # regeneration changes them, the committed copies were stale or written
+        # by hand — either way the API and the manifests disagree, and every
+        # consumer installs a schema that does not match the types.
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- config/crd/bases api; then
+            echo "::error::generated files are out of date — run 'make manifests generate' and commit the result"
+            exit 1
+          fi
+          echo "generated files match the types"
+
+      - name: Install setup-envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          KUBEBUILDER_ASSETS="$(setup-envtest use "${ENVTEST_K8S_VERSION}" -p path)" \
+            go test -json ./... -coverprofile cover.out > test-report.json
+        continue-on-error: true
+
+      - name: Test report
+        uses: dorny/test-reporter@6e6a65b7a0bd2c9197df7d0ae36ac5cee784230c # v2.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: Unit tests
+          path: test-report.json
+          reporter: golang-json
+
+      - name: Fail if tests failed
+        # `go test -json > file` swallows the exit code into the redirect, so the
+        # step above is allowed to soft-fail purely to let the reporter publish.
+        # This is what actually gates the stage.
+        run: |
+          set -euo pipefail
+          if grep -q '"Action":"fail"' test-report.json; then
+            echo "::error::one or more tests failed — see the Unit tests report"
+            exit 1
+          fi
+          echo "all tests passed"

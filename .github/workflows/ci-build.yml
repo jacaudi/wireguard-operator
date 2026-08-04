@@ -1,0 +1,118 @@
+# Stage d — multi-arch images to GHCR. Matrix over the two images this operator
+# ships; `version`+`ref` drive release builds.
+name: ci-build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release tag to derive semver image tags from (e.g. v1.2.3). Empty for non-release builds.
+        required: false
+        default: ''
+        type: string
+      ref:
+        description: Git ref to build. Empty builds the triggering commit; a release build must pass its tag.
+        required: false
+        default: ''
+        type: string
+      push:
+        description: Push to the registry. False builds only, to prove the Dockerfile still works.
+        required: false
+        default: true
+        type: boolean
+      platforms:
+        description: Build platforms.
+        required: false
+        default: linux/amd64,linux/arm64
+        type: string
+      extra_tag:
+        description: Additional literal tag to publish (e.g. dev-feature-1). Empty adds none.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        image: [manager, agent]
+    env:
+      # GHCR rejects uppercase refs; owner/repo casing is not guaranteed.
+      IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.image }}
+    steps:
+      - name: Normalise the image name to lowercase
+        run: echo "IMAGE=$(printf '%s' "${IMAGE}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+          submodules: true
+
+      - name: Verify the checkout matches the release being stamped
+        if: ${{ inputs.version != '' }}
+        env:
+          WANT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ ! -f .release-please-manifest.json ]; then
+            echo "::error::.release-please-manifest.json missing — cannot verify ${WANT}"
+            exit 1
+          fi
+          have="v$(jq -r '.["."]' .release-please-manifest.json)"
+          echo "tag being stamped: ${WANT}"
+          echo "manifest reports:  ${have}"
+          [ "${WANT}" = "${have}" ] || { echo "::error::refusing to publish ${WANT} from a checkout that reports ${have}"; exit 1; }
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=sha
+            type=raw,priority=900,value=${{ inputs.extra_tag }},enable=${{ inputs.extra_tag != '' }}
+            type=raw,priority=1000,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern=v{{version}},value=${{ inputs.version }}
+            type=semver,pattern=v{{major}}.{{minor}},value=${{ inputs.version }}
+            type=semver,pattern=v{{major}},value=${{ inputs.version }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GitHub Container Registry
+        if: ${{ inputs.push }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: images/${{ matrix.image }}/Dockerfile
+          pull: true
+          push: ${{ inputs.push }}
+          platforms: ${{ inputs.platforms }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
+          provenance: mode=min   # NOT max — max embeds build-args and secrets

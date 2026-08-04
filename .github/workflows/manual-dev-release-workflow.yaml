@@ -1,70 +1,69 @@
+# Ad-hoc image + manifest build off any branch, for testing a change in a real
+# cluster before it is released. Not part of the `ci` gate.
 name: Manual DEV Release
+
 on:
   workflow_dispatch:
     inputs:
-      repository:
-        description: 'Repository name with owner.'
-        required: true
-        default: 'nccloud/wireguard-operator'
-        type: string
       branch:
-        description: 'The branch, tag or SHA to checkout.'
+        description: 'The branch, tag or SHA to build.'
         required: true
         default: 'main'
+        type: string
+      tag:
+        description: 'Image tag suffix; images publish as dev-<tag>.'
+        required: true
+        default: 'feature-1'
         type: string
       platforms:
         description: 'Docker image platforms'
         required: true
-        default: 'linux/amd64, linux/arm64'
+        default: 'linux/amd64,linux/arm64'
         type: string
-      tag:
-        description: 'Docker image tag'
-        required: true
-        default: 'feature-1'
-        type: string
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   build-images:
-    uses: ./.github/workflows/build-images.yaml
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci-build.yml
     with:
-      push: true
-      latest: false
       ref: ${{ inputs.branch }}
-      repository:  ${{ inputs.repository }}
-      tag: dev-${{ inputs.tag }}
+      platforms: ${{ inputs.platforms }}
+      extra_tag: dev-${{ inputs.tag }}
 
   save-release:
     needs: [build-images]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.repository }}
           ref: ${{ inputs.branch }}
+          persist-credentials: false
           submodules: true
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: "go.mod"
+          go-version-file: go.mod
 
-      - name: prepare new release
+      - name: Generate release.yaml pinned to the dev images
         env:
-          MANAGER_IMAGE: ghcr.io/${{ inputs.repository }}/manager:dev-${{ inputs.tag }}
-          AGENT_IMAGE: ghcr.io/${{ inputs.repository }}/agent:dev-${{ inputs.tag }}
-        run : |
-          make generate-release-file AGENT_IMAGE="$AGENT_IMAGE" MANAGER_IMAGE="$MANAGER_IMAGE"
-      - name: upload release
-        uses: actions/upload-artifact@v7
+          TAG: dev-${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          repo_lc="$(printf '%s' "${REPO}" | tr '[:upper:]' '[:lower:]')"
+          make generate-release-file \
+            AGENT_IMAGE="ghcr.io/${repo_lc}/agent:${TAG}" \
+            MANAGER_IMAGE="ghcr.io/${repo_lc}/manager:${TAG}"
+
+      - name: Upload release.yaml
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release.yaml
           path: ${{ github.workspace }}/release.yaml
