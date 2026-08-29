@@ -109,10 +109,15 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 test: manifests generate fmt vet envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test ./... -coverprofile cover.out
+# -tags=integration is REQUIRED, not optional. internal/controller carries
+# //go:build integration, so without it `go test ./...` silently skips the
+# entire envtest suite and still reports success.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test ./... -tags=integration -coverprofile cover.out
 
 test-ci: manifests generate fmt vet envtest ## Run tests with JUnit output for CI.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test -json ./... -coverprofile cover.out > test-report.json
+# See the note on `test` above: -tags=integration or the envtest suite does
+# not run and CI goes green having tested strictly less.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test -json ./... -tags=integration -coverprofile cover.out > test-report.json
 
 TEST_RUNNER_IMAGE ?= wireguard-operator-test:local
 

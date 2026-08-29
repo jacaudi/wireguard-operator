@@ -1,0 +1,100 @@
+# Cross-cutting repo checks; each is a no-op when its subject is absent.
+version: '3'
+
+tasks:
+  ci:
+    desc: All repo-level checks
+    cmds:
+      - task: actions:local-refs
+      - task: actions:run-scripts
+      - task: actions:run-interpolation
+      - task: actions
+      - task: yaml
+      - task: docker
+
+  actions:
+    desc: Lint GitHub Actions workflows (only when they changed)
+    cmds:
+      - |
+        set -eu
+        [ -d .github/workflows ] || { echo "no workflows — skipping actionlint"; exit 0; }
+        base="${BASE_REF:-HEAD~1}"
+        if git rev-parse --verify --quiet "${base}" >/dev/null; then
+          if [ -z "$(git diff --name-only "${base}" HEAD -- .github/workflows)" ]; then
+            echo "no workflow changes since ${base} — skipping actionlint"
+            exit 0
+          fi
+        fi
+        command -v actionlint >/dev/null \
+          || { echo "actionlint not installed: go install github.com/rhysd/actionlint/cmd/actionlint@latest" >&2; exit 1; }
+        actionlint
+
+  actions:local-refs:
+    desc: "Assert every local `uses:` reference actually exists"
+    cmds:
+      # DELEGATES to scripts/local-refs.sh — the SAME script ci-lint.yml runs.
+      # Under deviation D1 CI does not call this taskfile, so the check lives in
+      # scripts/ where both paths reach the one copy. Real logic goes in
+      # scripts/; thin tool invocations stay inline. Do not re-inline this: two
+      # copies of a non-trivial check is exactly the drift D1 risks.
+      #
+      # Unconditional, unlike `actions:` above — actionlint is skipped when no
+      # workflow changed, but a MISSING stage file is a change to the tree that
+      # `git diff -- .github/workflows` does not always show.
+      - sh scripts/local-refs.sh
+
+  actions:run-scripts:
+    desc: "Assert every repo-relative script named in a `run:` step exists"
+    cmds:
+      # ci-lint.yml gained this gate and this file did not, so `task ci` stopped
+      # predicting CI the moment it was added — a rename that left a caller
+      # behind passed locally and failed on push, which is the exact drift
+      # deviation D1 risks and the reason tests/taskfile-parity-test.sh now
+      # derives its list from ci-lint.yml instead of trusting this one.
+      - sh scripts/run-scripts-exist.sh
+
+  actions:run-interpolation:
+    desc: "Assert no expression is interpolated into a shell body"
+    cmds:
+      # Shipped uncalled here for the same reason and with a worse consequence:
+      # what it catches is a crafted input reaching bash.
+      - sh scripts/run-interpolation.sh
+
+  yaml:
+    desc: yamllint, when a config is present
+    cmds:
+      # yamllint, NOT `uvx yamllint` — yamllint ships on the runner and uv does not.
+      - |
+        set -eu
+        if [ ! -f .yamllint.yml ] && [ ! -f .yamllint.yaml ]; then
+          echo "no .yamllint config — skipping"; exit 0
+        fi
+        command -v yamllint >/dev/null \
+          || { echo "yamllint not installed: uv tool install yamllint" >&2; exit 1; }
+        yamllint .
+
+  docker:
+    desc: hadolint every Dockerfile / Containerfile
+    cmds:
+      # DELEGATES to scripts/dockerfile-list.sh — the SAME list ci-lint.yml's
+      # hadolint step reads and .github/actions/setup/detect.sh decides on. This
+      # was the THIRD hand-written copy of that glob, and every difference was a
+      # defect: `-name 'Dockerfile*'` also matched `Dockerfilexyz`, the prunes
+      # missed .venv/ and .worktrees/, and a bare `xargs` splits on ANY
+      # whitespace, so `my images/Dockerfile` became two arguments and hadolint
+      # failed on two files nobody wrote. Both of the other two sites carry a
+      # comment forbidding exactly this; see that script's header for what it
+      # excludes and why.
+      - |
+        set -eu
+        files=$(sh scripts/dockerfile-list.sh)
+        [ -n "${files}" ] || { echo "no Dockerfile/Containerfile — skipping hadolint"; exit 0; }
+        command -v hadolint >/dev/null \
+          || { echo "hadolint not installed: brew install hadolint" >&2; exit 1; }
+        # NUL-delimited, matching ci-lint.yml: a path containing a space must
+        # reach hadolint as one argument.
+        printf '%s\n' "${files}" | tr '\n' '\0' | xargs -0 hadolint
+
+  # chart:deps and helm MOVED to .taskfiles/chart.yml. A chart is a domain of its
+  # own, like a language, and repo.yml is for cross-cutting repo checks. Keeping
+  # chart logic here meant every repo carried it whether or not it had a chart.

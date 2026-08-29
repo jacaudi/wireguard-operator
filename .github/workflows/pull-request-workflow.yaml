@@ -19,6 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # REQUIRED BY THE RATCHET, and its absence fails OPEN rather than loud.
+          # .golangci.yml sets `new-from-merge-base: origin/main`, which needs the
+          # merge base to exist locally. At the default depth of 1 it does not,
+          # and golangci-lint downgrades that to a warning —
+          #   "Can't process results by diff processor: ... could not read git repo"
+          # — then reports the FULL tree: 113 pre-existing findings, and a red
+          # gate that says nothing about the change under review.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:

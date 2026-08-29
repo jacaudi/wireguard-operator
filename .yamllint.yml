@@ -1,0 +1,70 @@
+# Fleet baseline, tuned for Actions workflows and Helm YAML.
+extends: default
+
+rules:
+  document-start:
+    present: false
+
+  line-length: disable
+
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
+    check-keys: false
+
+  comments:
+    min-spaces-from-content: 1
+
+  indentation:
+    spaces: 2
+    indent-sequences: true
+
+  empty-lines:
+    max-end: 1
+
+ignore: |
+  # Machine-managed by copier — its dumper does not indent sequence items, and
+  # style-linting a generated file is not our business.
+  .copier-answers.yml
+  .worktrees/
+  node_modules/
+  vendor/
+  # NOT all of `charts/`, which is what this used to say. Ignoring the whole
+  # directory left values.yaml and Chart.yaml — the two hand-written files in a
+  # chart, and the ones most likely to carry a typo — as the only YAML in a
+  # chart repo that nothing linted. Only the two generated or non-YAML
+  # subdirectories are skipped:
+  #
+  # Helm chart templates are Go templates, not YAML — `{{- if }}` is a hard
+  # syntax error to yamllint. `helm lint` + `helm template` cover them instead.
+  templates/
+  # crds/ is controller-gen output — regenerated and diffed by
+  # scripts/chart-drift.sh rather than hand-edited. It marshals through
+  # sigs.k8s.io/yaml, whose yaml.v2 backend writes block sequences WITHOUT
+  # indenting them under their key, and `indent-sequences: true` above rejects
+  # that outright. Linting a generated file can only produce findings nobody is
+  # in a position to act on.
+  #
+  # THIS LIST HAS SILENTLY REVERTED ONCE. tests/yamllint-config-test.sh now RUNS
+  # this config over a chart-shaped tree and demands it complain: a config that
+  # lints too little exits 0, which is indistinguishable from a clean repo.
+  crds/
+  # --- repo-specific additions below; everything above is the fleet baseline ---
+  #
+  # SAME ROOT CAUSE AS crds/ ABOVE, one directory up. This is a kubebuilder
+  # project, so controller-gen, kustomize and operator-sdk own these trees and
+  # all three marshal through sigs.k8s.io/yaml — whose yaml.v2 backend writes
+  # block sequences WITHOUT indenting them under their key, which
+  # `indent-sequences: true` rejects outright. Measured before ignoring: 341
+  # findings, 136 of them indentation inside config/ alone.
+  #
+  # Fixing them does not stick. `make manifests` regenerates config/crd/bases
+  # and config/rbac/role.yaml, `make generate-release-file` regenerates
+  # release.yaml, and operator-sdk regenerates bundle/ — so a hand-reindented
+  # file is undone by the next codegen run, and the drift gate in ci-test would
+  # then fail on the difference.
+  #
+  # Deliberately NOT ignored: examples/ and .github/, which are hand-written and
+  # were fixed rather than exempted.
+  config/
+  bundle/
+  release.yaml

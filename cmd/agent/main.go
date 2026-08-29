@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/go-logr/stdr"
 	"github.com/nccloud/wireguard-operator/internal/agent"
@@ -148,7 +149,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	srv := &http.Server{Addr: ":8080"}
+	// Timeouts are not optional here. This listener answers the kubelet's health
+	// probes, and with no ReadHeaderTimeout a client that opens a connection and
+	// dribbles header bytes holds a goroutine open indefinitely (Slowloris) —
+	// enough of them and the probe endpoint stops answering, which the kubelet
+	// reads as an unhealthy pod and restarts the tunnel.
+	srv := &http.Server{
+		Addr:              ":8080",
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		<-ctx.Done()
 		log.Info("Shutting down agent")
