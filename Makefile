@@ -14,6 +14,16 @@ LOCALBIN ?= $(shell pwd)/bin
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
+# Every tool rule below takes $(LOCALBIN) as an ORDER-ONLY prerequisite (the
+# `|`), and that pipe is load-bearing. As a normal prerequisite, installing any
+# one tool updates bin/'s mtime, which makes every OTHER tool look stale — make
+# re-runs its installer, and kustomize's refuses outright:
+#   .../bin/kustomize exists. Remove it first.
+# ci-lint.yml reproduces that order exactly: `make manifests generate` installs
+# controller-gen, then the release.yaml drift gate calls generate-release-file,
+# which needs kustomize. Order-only means "ensure the directory exists" without
+# comparing timestamps against it.
+
 ## Tool Binaries
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
@@ -157,11 +167,11 @@ docker-build-integration-test:  docker-build-manager
 
 
 run-e2e: $(KIND)
-	AGENT_IMAGE=${AGENT_IMAGE} $(MAKE) update-agent-image
-	MANAGER_IMAGE=${MANAGER_IMAGE} $(MAKE) update-manager-image
-	$(KUSTOMIZE) build config/default > release_it.yaml
-	git checkout ./config/default/manager_args_patch.yaml
-	git checkout ./config/manager/kustomization.yaml
+	@for f in $(PINNED_AT_BUILD); do cp "$$f" "$$f.pre-build"; done
+	@trap 'for f in $(PINNED_AT_BUILD); do mv "$$f.pre-build" "$$f"; done' EXIT; \
+	  AGENT_IMAGE=${AGENT_IMAGE} $(MAKE) update-agent-image && \
+	  MANAGER_IMAGE=${MANAGER_IMAGE} $(MAKE) update-manager-image && \
+	  $(KUSTOMIZE) build config/default > release_it.yaml
 	KUBECONFIG=$(HOME)/.kube/config KUBE_CONFIG=$(HOME)/.kube/config KIND_BIN=${KIND} WIREGUARD_OPERATOR_RELEASE_PATH="../../release_it.yaml" AGENT_IMAGE=${AGENT_IMAGE} MANAGER_IMAGE=${MANAGER_IMAGE} SKIP_CLEANUP=${SKIP_CLEANUP} go test -tags=e2e ./internal/it/ -v -count=1
 
 docker-push: ## Push docker image with the manager.
@@ -175,6 +185,19 @@ install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/crd | kubectl delete -f -
 
+# These two files are mutated in place by update-agent-image and
+# update-manager-image so a build can stamp release-time image pins into them,
+# then restored — they are not meant to carry those pins in the tree.
+#
+# RESTORED FROM A SAVED COPY, NOT `git checkout`. Both targets below used to run
+# `git checkout ./config/default/manager_args_patch.yaml`, which restores from the
+# INDEX and therefore silently discards any uncommitted edit to these files.
+# ci-lint.yml now runs generate-release-file on every push via
+# hack/release-file-drift.sh, so a developer reproducing the gate locally would
+# lose in-progress work with no warning. Verified the hard way: it ate an
+# image-rename edit exactly that way while this branch was being written.
+PINNED_AT_BUILD := config/default/manager_args_patch.yaml config/manager/kustomization.yaml
+
 update-agent-image: kustomize
 	sed 's|$${AGENT_IMAGE}|$(AGENT_IMAGE)|g' ./config/default/manager_args_patch.yaml.template > ./config/default/manager_args_patch.yaml
 
@@ -182,10 +205,11 @@ update-manager-image: kustomize
 	$(info MANAGER_IMAGE: "$(MANAGER_IMAGE)")
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${MANAGER_IMAGE}
 
-generate-release-file: kustomize update-agent-image update-manager-image
-	$(KUSTOMIZE) build config/default > release.yaml
-	git checkout ./config/default/manager_args_patch.yaml
-	git checkout ./config/manager/kustomization.yaml
+generate-release-file: kustomize
+	@for f in $(PINNED_AT_BUILD); do cp "$$f" "$$f.pre-build"; done
+	@trap 'for f in $(PINNED_AT_BUILD); do mv "$$f.pre-build" "$$f"; done' EXIT; \
+	  $(MAKE) update-agent-image update-manager-image && \
+	  $(KUSTOMIZE) build config/default > release.yaml
 
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
@@ -196,20 +220,20 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
-$(CONTROLLER_GEN): $(LOCALBIN)
+$(CONTROLLER_GEN): | $(LOCALBIN)
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 
 kind: $(KIND) ## Download kind locally if necessary.
-$(KIND): $(LOCALBIN)
+$(KIND): | $(LOCALBIN)
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/kind/cmd/kind@$(KIND_VERSION)
 
 KUSTOMIZE_INSTALL_SCRIPT ?= "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
-$(KUSTOMIZE): $(LOCALBIN)
+$(KUSTOMIZE): | $(LOCALBIN)
 	curl -s $(KUSTOMIZE_INSTALL_SCRIPT) | bash -s -- $(subst v,,$(KUSTOMIZE_VERSION)) $(LOCALBIN)
 
 .PHONY: envtest
 envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
-$(ENVTEST): $(LOCALBIN)
+$(ENVTEST): | $(LOCALBIN)
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
