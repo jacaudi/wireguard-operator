@@ -164,7 +164,7 @@ func (b *DeploymentBuilder) agentContainer(wg *v1alpha1.Wireguard, readOnlyRootF
 				Protocol:      corev1.ProtocolUDP,
 			},
 			{
-				ContainerPort: WireguardPort,
+				ContainerPort: HTTPPort,
 				Name:          "http",
 				Protocol:      corev1.ProtocolTCP,
 			},
