@@ -1,0 +1,154 @@
+# Stage 4 — release-please.
+#
+# Ordinary main push : opens/updates the release PR (CHANGELOG + version bump)
+# release-PR merge   : creates the tag and the GitHub Release (release notes)
+#
+# A STAGE RATHER THAN AN INLINE JOB, even though every file here is copied in
+# anyway. The `workflow_call` interface earns its keep on the chart half: the
+# "Resolve chart outputs" step below is real logic — release-please prefixes a
+# package's outputs with `<path>--`, and getting that wrong is the defect where
+# a chart repo's release job never fires and charts silently never publish.
+# Inlining it would put that branch in ci.yaml, which is otherwise a pure job
+# graph with no implementation in it at all.
+#
+# NO CHECKOUT, deliberately. release-please drives the repo entirely through the
+# API and this stage calls no script, so there is nothing for a checkout to
+# provide.
+#
+# The `main`-only gate lives in the CALLER's `if:`, not here. Hardcoding
+# `github.ref == 'refs/heads/main'` would make this stage silently do nothing
+# anywhere else, which is not a decision a stage gets to make for the repo.
+name: ci-release
+
+on:
+  workflow_call:
+    inputs:
+      config-file:
+        description: release-please config, repo-relative.
+        required: false
+        default: .github/release-please-config.json
+        type: string
+      manifest-file:
+        description: release-please manifest, repo-relative. Must match ci-build's manifest-file.
+        required: false
+        default: .github/release-please-manifest.json
+        type: string
+      chart-package:
+        description: >-
+          release-please package path for the chart, e.g. `charts`. Empty means the
+          repo ships no chart. Multi-package release-please prefixes a package's
+          outputs with `<path>--`, so this is what resolves `charts--version`.
+        required: false
+        default: ''
+        type: string
+    secrets:
+      APP_ID:
+        description: GitHub App id. REQUIRED — there is deliberately no GITHUB_TOKEN fallback.
+        required: true
+      APP_PRIVATE_KEY:
+        description: Private key for the above App.
+        required: true
+    outputs:
+      # Block style, not aligned flow mappings: `{ a: 1,  b: 2 }` with padding trips
+      # yamllint's braces/colons/commas rules and fails the repo's own gate.
+      release_created:
+        description: 'true when a release was cut'
+        value: ${{ jobs.release.outputs.release_created }}
+      tag_name:
+        description: 'Release tag, e.g. v1.2.3'
+        value: ${{ jobs.release.outputs.tag_name }}
+      version:
+        description: 'Bare version, e.g. 1.2.3'
+        value: ${{ jobs.release.outputs.version }}
+      major:
+        description: 'Major component, for the major tag'
+        value: ${{ jobs.release.outputs.major }}
+      chart_release_created:
+        description: 'true when the chart package released'
+        value: ${{ jobs.release.outputs.chart_release_created }}
+      chart_version:
+        description: 'Chart version, BARE semver'
+        value: ${{ jobs.release.outputs.chart_version }}
+
+# What the CALLER must grant. A called workflow can never exceed the calling job's
+# grant, so this block is the contract, not a suggestion: a caller that omits
+# `pull-requests: write` gets a release-PR push that fails on permissions.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: release-please
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+      version: ${{ steps.rp.outputs.version }}
+      major: ${{ steps.rp.outputs.major }}
+      chart_release_created: ${{ steps.chart.outputs.created }}
+      chart_version: ${{ steps.chart.outputs.version }}
+    steps:
+      # NO `if: APP_ID != ''` guard and NO GITHUB_TOKEN fallback — deliberate, and
+      # the one thing in this file that must never be "improved".
+      # GITHUB_TOKEN cannot trigger workflows, so a silent fallback opens a
+      # release PR that never gets a run, never reports `ci`, and is therefore
+      # unmergeable FOREVER with no error anywhere explaining why. Letting this
+      # action fail on an empty app-id turns that into a loud, immediate failure
+      # at the right place. Both secrets are declared mandatory for the same reason.
+      - name: Generate a GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Run release-please
+        id: rp
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          # Paths INSIDE the config (packages, extra-files) stay relative to the
+          # REPO ROOT, not to the config file. Moving the config does not
+          # reinterpret them.
+          #
+          # ci-build.yml reads the manifest directly to verify a release build; if
+          # a consumer moves these, it moves ci-build's `manifest-file:` too.
+          config-file: ${{ inputs.config-file }}
+          manifest-file: ${{ inputs.manifest-file }}
+
+      # Resolving the `<path>--` prefix here removes a copy-paste trap from every
+      # consumer: the mandated chart path is `charts/`, so the prefix is
+      # `charts--`, not the `chart--` the reference's comment showed.
+      #
+      # It FAILS LOUDLY when chart-package names a package the config does not
+      # declare. That is the defect where a chart repo's release-chart job never
+      # fires and charts silently never publish.
+      #
+      # GUARDED ON releases_created. release-please sets per-path outputs ONLY
+      # when it actually cuts a release; on an ordinary main push it opens or
+      # updates the release PR and sets none. Without this guard the step cannot
+      # tell "config declares no such package" (the defect worth failing on) from
+      # "no release this run" (the normal case), and EVERY chart repo goes red on
+      # EVERY push to main.
+      - name: Resolve chart outputs
+        id: chart
+        if: ${{ inputs.chart-package != '' && steps.rp.outputs.releases_created == 'true' }}
+        env:
+          PKG: ${{ inputs.chart-package }}
+          CONFIG: ${{ inputs.config-file }}
+          ALL: ${{ toJSON(steps.rp.outputs) }}
+        run: |
+          set -euo pipefail
+          created=$(printf '%s' "${ALL}" | jq -r --arg k "${PKG}--release_created" '.[$k] // empty')
+          version=$(printf '%s' "${ALL}" | jq -r --arg k "${PKG}--version" '.[$k] // empty')
+          if [ -z "${created}" ] && [ -z "${version}" ]; then
+            echo "::error::a release was cut, but chart-package '${PKG}' produced no release-please outputs."
+            echo "::error::Add a \"${PKG}\" package to ${CONFIG}, or unset chart-package."
+            exit 1
+          fi
+          { echo "created=${created:-false}"; echo "version=${version}"; } >> "$GITHUB_OUTPUT"

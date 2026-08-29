@@ -1,0 +1,166 @@
+# Release stage — apply the release tags to the digest ci-build already produced.
+#
+# A registry-side manifest copy, NOT a rebuild. Two reasons:
+#   1. release-please tags the release PR's merge commit, which is the exact
+#      commit ci-build built in this same run. Rebuilding produces a second
+#      multi-arch build of identical source.
+#   2. A rebuild yields a NEW digest that nothing has smoke-tested. Retagging
+#      publishes the same bytes that already passed, which a rebuild cannot
+#      guarantee — container builds are not bit-reproducible.
+#
+# `docker buildx imagetools create` copies the whole multi-arch manifest LIST.
+# `docker pull && docker tag && docker push` would collapse it to the runner's
+# single architecture and silently drop arm64.
+name: ci-retag
+
+on:
+  workflow_call:
+    inputs:
+      source:
+        description: Digest-pinned image reference to retag (from ci-build).
+        required: true
+        type: string
+      version:
+        description: Release tag to apply (e.g. v1.2.3).
+        required: true
+        type: string
+      image:
+        description: Image name. Defaults to ghcr.io/<owner>/<repo>.
+        required: false
+        default: ''
+        type: string
+    secrets:
+      APP_ID:
+        description: GitHub App id. Required only to push outside this repo's own GHCR namespace.
+        required: false
+      APP_PRIVATE_KEY:
+        description: Private key for the above App
+        required: false
+    outputs:
+      image:
+        description: The released image reference
+        value: ${{ jobs.retag.outputs.image }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  retag:
+    name: retag ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.out.outputs.image }}
+    env:
+      APP_ID: ${{ secrets.APP_ID }}
+      SOURCE: ${{ inputs.source }}
+      TAG: ${{ inputs.version }}
+      # GHCR rejects uppercase refs; owner/repo casing is not guaranteed.
+      IMAGE: ${{ inputs.image != '' && inputs.image || format('ghcr.io/{0}', github.repository) }}
+    steps:
+      - name: Normalise the image name to lowercase
+        run: echo "IMAGE=$(printf '%s' "${IMAGE}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      # THE GUARD. Retagging is only correct if the tag names the commit this
+      # run built. If main moved, or release-please tagged something unexpected,
+      # publishing build's digest as this version would ship the wrong tree.
+      # Fail loudly rather than assume — the whole optimisation rests on this.
+      - name: Assert the tag points at this run's commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" --jq '.object.sha')
+          type=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" --jq '.object.type')
+          # An annotated tag points at a tag object, which points at the commit.
+          if [ "${type}" = "tag" ]; then
+            ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${ref}" --jq '.object.sha')
+          fi
+          echo "tag ${TAG} -> ${ref}"
+          echo "this run   -> ${GITHUB_SHA}"
+          [ "${ref}" = "${GITHUB_SHA}" ] || {
+            echo "::error::${TAG} points at ${ref}, not this run's ${GITHUB_SHA} — refusing to retag."
+            echo "::error::Publish with release-republish.yml (rebuild mode) after investigating."
+            exit 1
+          }
+
+      - name: Generate a GitHub App token
+        id: app-token
+        if: ${{ env.APP_ID != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ steps.app-token.outputs.token && 'x-access-token' || github.actor }}
+          password: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+
+      # Mirrors ci-build's docker/metadata-action tag set for the release case:
+      #   v1.2.3, v1.2, v1, latest
+      - name: Derive the tag set
+        id: tags
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          # A REAL SEMVER PATTERN, not a shape check. `case "${v}" in *.*.*)`
+          # merely asked for two dots somewhere, so `1.2.3$(id -un)` satisfied it
+          # — along with every other shell metacharacter a caller cares to send
+          # through the `version` input — and went on to be used as a tag. The
+          # tag set derived below (vX.Y, vX, latest) is meaningless for anything
+          # but three plain numeric parts, so demanding exactly that costs
+          # nothing and is the honest bound. Prereleases are rejected on purpose:
+          # moving `latest` to an rc is not a thing this stage should do quietly.
+          printf '%s' "${v}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "::error::${TAG} is not a three-part semver tag"; exit 1
+          }
+          major="${v%%.*}"
+          rest="${v#*.}"
+          minor="${rest%%.*}"
+          {
+            echo "list=v${v} v${major}.${minor} v${major} latest"
+          } >> "$GITHUB_OUTPUT"
+          echo "will tag: v${v} v${major}.${minor} v${major} latest"
+
+      # `env:`, NOT direct interpolation — the rule ci-lint.yml states and
+      # scripts/run-interpolation.sh now enforces. This step used to write
+      # `for t in ${{ steps.tags.outputs.list }}`, and GitHub substitutes an
+      # expression into the script as TEXT before any shell sees it, so the
+      # list's contents became shell source. That list derives from the
+      # `version` input, which a consumer supplies. Through `env:` it arrives as
+      # data instead.
+      - name: Copy the manifest list to the release tags
+        id: out
+        env:
+          LIST: ${{ steps.tags.outputs.list }}
+        run: |
+          set -euo pipefail
+          args=()
+          # shellcheck disable=SC2086  # deliberate word split over the tag list
+          for t in ${LIST}; do
+            args+=(--tag "${IMAGE}:${t}")
+          done
+          docker buildx imagetools create "${args[@]}" "${SOURCE}"
+          echo "image=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Confirm the released digest matches what was tested
+        run: |
+          set -euo pipefail
+          want="${SOURCE##*@}"
+          # The Go template below is single-quoted and uses bare double-braces.
+          # GitHub only interpolates the dollar-prefixed form, so this reaches
+          # docker intact. Do NOT write the dollar-prefixed form in a comment
+          # here either: `run:` blocks are expression-substituted in full,
+          # comments included, so an empty one is a parse error. (actionlint
+          # caught exactly that here.)
+          got=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${IMAGE}:${TAG}")
+          echo "tested : ${want}"
+          echo "shipped: ${got}"
+          [ "${want}" = "${got}" ] || { echo "::error::released digest differs from the tested one"; exit 1; }

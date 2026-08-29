@@ -1,0 +1,84 @@
+# Integration tests that need job-level infrastructure.
+#
+# WHY THIS IS A STAGE OF ITS OWN AND NOT PART OF ci-lint: `services:` and
+# envtest asset setup are job-level concerns. A composite action cannot declare
+# a `services:` block, a called workflow declares its own, and the caller can
+# neither inject nor override it. So a repo needing one gets this stage, wired
+# into the `ci` gate in ci.yaml.
+#
+# Copier writes this file only when integration_kind is not `none`, and emits the
+# matching `integration:` job in ci.yaml under the same condition. The two move
+# together or the run fails on a `uses:` that points at nothing.
+name: integration
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # envtest runs a real kube-apiserver and etcd from downloaded binaries.
+      # setup-envtest resolves and caches them; KUBEBUILDER_ASSETS is how
+      # controller-runtime finds them, and the suite FAILS LOUDLY without it
+      # rather than skipping, which is the behaviour you want.
+      - name: Install setup-envtest
+        env:
+          # THE TEMPLATE'S STOCK v0.22.1 DOES NOT RESOLVE — verified, and it
+          # would fail this step in any consumer, not just here:
+          #   go: sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.22.1:
+          #   module sigs.k8s.io/controller-runtime@v0.22.1 found, but does not
+          #   contain package .../tools/setup-envtest
+          # tools/setup-envtest is a SEPARATE MODULE with its own tag line, and
+          # its only released versions are v0.24.0 and v0.24.1. A controller-
+          # runtime version number is not a valid version for it. Worth reporting
+          # upstream.
+          #
+          # The tool version is also independent of the library version: this is
+          # a downloader for apiserver/etcd binaries. What has to match this
+          # repo's k8s.io/* v0.30 client stack is the ASSET version below, not
+          # this. Verified: v0.24.1 fetches 1.30.0 assets and the suite passes
+          # against controller-runtime v0.18.5.
+          #
+          # The stock renovate annotation named controller-runtime, which is the
+          # wrong module for this pin and would propose versions that cannot
+          # install.
+          # renovate: datasource=go depName=sigs.k8s.io/controller-runtime/tools/setup-envtest
+          SETUP_ENVTEST_VERSION: v0.24.1
+        run: go install "sigs.k8s.io/controller-runtime/tools/setup-envtest@${SETUP_ENVTEST_VERSION}"
+
+      - name: Resolve envtest assets
+        env:
+          # Pin the control-plane version deliberately: `use latest` makes CI
+          # non-reproducible and lets an upstream k8s release turn the fleet red
+          # overnight with nothing to bisect against.
+          #
+          # 1.30.0, not the template's stock 1.34.x — this repo's client stack is
+          # k8s.io/* v0.30.x behind controller-runtime v0.18.5. THIS NUMBER HAS
+          # THREE COPIES that no tool can share: here, Makefile's
+          # ENVTEST_K8S_VERSION, and the fallback in .taskfiles/go.yml's
+          # `integration` task. Change one, change all three.
+          ENVTEST_K8S_VERSION: '1.30.0'
+        run: |
+          set -euo pipefail
+          path=$(setup-envtest use "${ENVTEST_K8S_VERSION}" --bin-dir "${RUNNER_TEMP}/envtest" -p path)
+          echo "KUBEBUILDER_ASSETS=${path}" >> "$GITHUB_ENV"
+          echo "resolved: ${path}"
+
+      - name: go test (envtest)
+        run: go test ./... -race -tags=integration
