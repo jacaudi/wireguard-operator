@@ -1,0 +1,353 @@
+# Stage 1 — static analysis AND unit tests. Runs each tool as its OWN STEP.
+#
+# DEVIATION D1: this stage does NOT call `task ci`. Each tool is invoked
+# directly so GitHub can attribute annotations, timing, and failures to the
+# specific check that produced them, instead of collapsing everything into one
+# opaque `task ci` step.
+#
+# The knowledge is still single-sourced — the RULES live in the config files
+# (.golangci.yml, .yamllint.yml, .hadolint.yaml), which both this workflow and
+# the consumer's taskfile.yml read. Tool VERSIONS live once, in
+# .github/actions/setup. Only the invocation is duplicated, and an invocation is
+# shared shape, not shared knowledge.
+#
+# Keep the consumer's taskfile.yml targets equivalent to the steps below, so
+# `task ci` locally still predicts what CI will say.
+name: ci-lint
+
+on:
+  workflow_call:
+    inputs:
+      go-test-flags:
+        description: Extra flags for `go test`. Override for stricter scheduled runs.
+        required: false
+        default: '-race'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # 0, not 2. Depth 2 only sees the last commit, so a push whose lint-
+          # relevant edit was not the final commit silently skipped the check.
+          fetch-depth: 0
+
+      - name: Set up toolchains
+        id: setup
+        uses: ./.github/actions/setup
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- workflow integrity -------------------------------------------------
+      # FIRST, and unconditional. actionlint has a verified blind spot: a bogus
+      # INPUT to a local composite action is caught, but `uses: ./path` where the
+      # path does not exist is SILENT. Every stage this repo runs is a local
+      # reference, so a stage file or .github/actions/setup/ that copier did not
+      # write passes lint cleanly and fails only at run time, on main.
+      # Quoted: an unquoted value containing a colon is a YAML syntax error.
+      - name: "Verify local uses: references resolve"
+        run: sh scripts/local-refs.sh
+
+      # The other two static gates that ship with this repo. Without these steps
+      # they are dead files in every consumer: nothing else invokes them.
+      #   run-scripts-exist.sh - every repo-relative script named in a run
+      #     step must exist. Catches a rename that left a caller behind.
+      #   run-interpolation.sh - no expression may be pasted straight into a
+      #     shell body, where a crafted input would reach bash.
+      - name: Verify every run step names a real script
+        run: sh scripts/run-scripts-exist.sh
+
+      - name: Verify no expression is interpolated into a shell body
+        run: sh scripts/run-interpolation.sh
+
+      # Surfaces drift between the files copier wrote here and the template they
+      # came from. Warns, never fails — see scripts/copier-freshness.sh for why.
+      # GH_TOKEN is required: the script resolves the template's latest release
+      # through `gh api`, and without it degrades to "freshness unknown" rather
+      # than failing.
+      - name: Check copier template freshness
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: sh scripts/copier-freshness.sh
+
+      # Unconditional, unlike the taskfile version which skips when no workflow
+      # changed. That optimisation exists for local dev; actionlint takes ~2s and
+      # the conditional is not worth its complexity in CI.
+      - name: actionlint
+        run: actionlint
+
+      # --- repo-level ---------------------------------------------------------
+      - name: yamllint
+        run: yamllint .
+
+      # THE SAME LIST .github/actions/setup/detect.sh reads, and that one decides
+      # whether hadolint is installed at all. While this step carried its own
+      # copy of the glob the two disagreed about dot-directories: a repo with
+      # .devcontainer/Dockerfile got docker=false from the detector — so hadolint
+      # was never installed — and this find handed that same file to it anyway,
+      # killing the step with `hadolint: command not found`, exit 127, blaming a
+      # Dockerfile that was fine. Never re-inline the glob; see
+      # scripts/dockerfile-list.sh for what it excludes and why.
+      - name: hadolint
+        run: |
+          set -euo pipefail
+          files=$(sh scripts/dockerfile-list.sh)
+          [ -n "${files}" ] || { echo "no Dockerfile/Containerfile — skipping"; exit 0; }
+          # NUL-delimited, NOT a bare `xargs`: xargs splits on ANY whitespace, so
+          # a path like `my images/Dockerfile` became two arguments and hadolint
+          # failed on two files nobody wrote.
+          printf '%s\n' "${files}" | tr '\n' '\0' | xargs -0 hadolint
+
+      # --- Go -----------------------------------------------------------------
+      # Checks FAIL on drift; they never fix it. A CI step that mutates the tree
+      # hides the problem it was meant to surface.
+      #
+      # A presence guard, NOT a loop: `go mod tidy -diff`, `golangci-lint run`
+      # and `govulncheck ./...` are all module-root operations, and detect.sh has
+      # already picked the shallowest go.mod.
+      #
+      # EVERY GO STEP CARRIES `working-directory`, AND THAT IS NOT COSMETIC.
+      # setup-go was given `go-version-file: <the shallowest go.mod>`, which
+      # installs a TOOLCHAIN and does nothing else — it does not cd. Nothing here
+      # set a working directory at all, so in a repo whose module is at svc/ all
+      # five steps ran in the repo root and failed together: `go mod tidy -diff`
+      # with `go.mod file not found in current directory or any parent
+      # directory`, `go test ./...` with `directory prefix . does not contain
+      # main module`. Measured, not inferred.
+      #
+      # `.` for the ordinary root-module repo, so the common case is unchanged.
+      # .golangci.yml stays at the REPO root either way: golangci-lint searches
+      # upward from its working directory, the same way ruff finds ruff.toml.
+      #
+      # tests/stage-shape-test.sh asserts this on every step matching the `go`
+      # guard, so a Go step added later cannot quietly omit it.
+      - name: gofmt / goimports check
+        if: steps.setup.outputs.go == 'true'
+        working-directory: ${{ steps.setup.outputs.godir }}
+        run: golangci-lint fmt --diff
+
+      - name: go mod tidy check
+        if: steps.setup.outputs.go == 'true'
+        working-directory: ${{ steps.setup.outputs.godir }}
+        # -diff exits non-zero on drift. A bare `go mod tidy` MUTATES go.mod in CI.
+        run: go mod tidy -diff
+
+      - name: golangci-lint
+        if: steps.setup.outputs.go == 'true'
+        working-directory: ${{ steps.setup.outputs.godir }}
+        run: golangci-lint run
+
+      - name: govulncheck
+        if: steps.setup.outputs.go == 'true'
+        working-directory: ${{ steps.setup.outputs.godir }}
+        run: govulncheck ./...
+
+      # `env:`, not direct interpolation: a published `workflow_call` input must
+      # never be pasted straight into a shell command.
+      - name: go test
+        if: steps.setup.outputs.go == 'true'
+        working-directory: ${{ steps.setup.outputs.godir }}
+        env:
+          GO_TEST_FLAGS: ${{ inputs.go-test-flags }}
+        run: |
+          # shellcheck disable=SC2086  # deliberate word-splitting of the flags
+          go test ./... ${GO_TEST_FLAGS}
+
+      # --- generated-file drift (kubebuilder; no template equivalent) ----------
+      # REPO-SPECIFIC ADDITIONS. The template ships a drift gate only for Helm
+      # charts (scripts/chart-drift.sh, below). This is a kubebuilder operator:
+      # its CRDs, RBAC and deepcopy code are generated from the API types and
+      # COMMITTED, so they can fall behind those types with nothing to say so —
+      # and every consumer then installs a schema that does not match.
+      #
+      # Both gates FAIL on drift and never fix it. A CI step that mutates the
+      # tree hides the problem it exists to surface.
+      - name: Regenerate CRDs, RBAC and deepcopy
+        # `make`, not a bare controller-gen invocation: the Makefile already
+        # pins CONTROLLER_TOOLS_VERSION and owns the exact generator flags, so
+        # calling it keeps one source of truth instead of a second copy here
+        # that can drift from what a developer runs locally.
+        run: make manifests generate
+
+      - name: Assert generated files are up to date
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- config api; then
+            echo "::error::generated files are out of date"
+            echo "::error::run 'make manifests generate' and commit the result"
+            exit 1
+          fi
+          echo "generated files match the API types"
+
+      # release.yaml is the documented install path and is ALSO generated — from
+      # config/, by kustomize. See hack/release-file-drift.sh for why the image
+      # pins are read back out of the file instead of being passed in.
+      - name: Verify release.yaml is not stale
+        run: sh hack/release-file-drift.sh
+
+      # --- Helm (chart repos only; a no-op otherwise) --------------------------
+      - name: Resolve chart dependencies
+        # Same script ci-chart.yml runs, so CI and local resolve identically.
+        # `helm dependency build` honours Chart.lock; `update` would rewrite it.
+        # Required once the vendored charts/*.tgz is deleted, or the template
+        # step below cannot resolve its subcharts.
+        run: sh scripts/chart-deps.sh
+
+      - name: Verify the chart is not stale
+        # DRIFT GATE. Operator charts derive their CRDs and RBAC from config/, so
+        # a committed chart can silently fall behind the API types. The script
+        # regenerates and then FAILS on any diff — it never fixes it, because a
+        # CI step that mutates the tree hides the problem it exists to surface.
+        # A repo with no hack/ generators has a hand-maintained chart and skips.
+        run: sh scripts/chart-drift.sh
+
+      - name: helm lint + template
+        run: |
+          set -euo pipefail
+          charts=$(sh scripts/chart-list.sh)
+          [ -n "${charts}" ] || { echo "no chart — skipping"; exit 0; }
+          # Split on NEWLINE ONLY, so a chart directory containing a space
+          # survives as one argument instead of becoming two bogus paths.
+          oldifs=$IFS
+          IFS='
+          '
+          # shellcheck disable=SC2086  # deliberate newline-only split, per IFS above
+          set -- ${charts}
+          IFS=$oldifs
+          for d in "$@"; do
+            helm lint "${d}"
+            # `template` as well as `lint`: lint catches schema and metadata
+            # problems, but only a full render catches a template that throws on
+            # default values.
+            helm template release-test "${d}" >/dev/null
+          done
+
+      # --- discover project directories ---------------------------------------
+      # NOTHING here hardcodes a project directory — that is what lets one
+      # byte-identical file serve every repo. The logic lives in a script so a
+      # shell harness can test it; see scripts/discover-dirs.sh.
+      - name: Discover project directories
+        run: |
+          set -euo pipefail
+          # NOT `... | tee -a "$GITHUB_ENV"`. The default shell is `bash -e`
+          # WITHOUT pipefail, so the step's status would be tee's and a failing
+          # discover-dirs.sh would exit 0 with PY_DIRS/JS_DIRS unset — every
+          # Python and JS step then prints "no … project — skipping". That
+          # converts a loud failure into the fail-silent shape this design
+          # exists to remove.
+          sh scripts/discover-dirs.sh > "${RUNNER_TEMP}/dirs.env"
+          cat "${RUNNER_TEMP}/dirs.env"
+          cat "${RUNNER_TEMP}/dirs.env" >> "$GITHUB_ENV"
+
+      # --- Python -------------------------------------------------------------
+      # One STEP per tool, looping over the discovered dirs — so a failure still
+      # says which tool broke, which is the whole point of deviation D1. The
+      # ::group:: markers say which directory.
+      #
+      # Bare `ruff` / `ty`: versions are pinned once in .github/actions/setup,
+      # which is also what `task python:ci` uses. Do not add a version here.
+      #
+      # ruff.toml lives at the REPO ROOT and ruff finds it by walking up from
+      # each project — verified. A project needing different rules drops its own
+      # ruff.toml with `extend = "../ruff.toml"`.
+      - name: ruff check
+        run: |
+          set -euo pipefail
+          [ -n "${PY_DIRS}" ] || { echo "no Python project — skipping"; exit 0; }
+          for d in ${PY_DIRS}; do echo "::group::ruff check ${d}"; (cd "${d}" && ruff check .); echo "::endgroup::"; done
+
+      - name: ruff format check
+        run: |
+          set -euo pipefail
+          [ -n "${PY_DIRS}" ] || exit 0
+          for d in ${PY_DIRS}; do echo "::group::ruff format ${d}"; (cd "${d}" && ruff format --check .); echo "::endgroup::"; done
+
+      - name: python typecheck
+        run: |
+          set -euo pipefail
+          [ -n "${PY_DIRS}" ] || exit 0
+          for d in ${PY_DIRS}; do
+            echo "::group::ty ${d}"
+            ( cd "${d}"
+              # The deps must be IN ty's environment or every third-party import
+              # reports unresolved and the check is worthless rather than absent.
+              if [ -f pyproject.toml ]; then ty check .
+              else uvx --with-requirements requirements.txt ty check .; fi )
+            echo "::endgroup::"
+          done
+
+      - name: pytest
+        run: |
+          set -euo pipefail
+          [ -n "${PY_DIRS}" ] || exit 0
+          for d in ${PY_DIRS}; do
+            ( cd "${d}"
+              if [ ! -d tests ] && [ ! -d test ]; then
+                echo "::warning::${d} has no tests/ — no Python tests are running"; exit 0
+              fi
+              echo "::group::pytest ${d}"
+              # --no-project: with no pyproject.toml, uv otherwise walks UP the
+              # tree and can bind to an unrelated project root.
+              if [ -f pyproject.toml ]; then uv run --with pytest pytest
+              else uv run --no-project --with-requirements requirements.txt --with pytest pytest; fi
+              echo "::endgroup::" )
+          done
+
+      # --- JS/TS --------------------------------------------------------------
+      # No version pins: eslint and typescript are devDependencies, so `npm ci`
+      # pins them from package-lock.json — already a single source.
+      #
+      # eslint.config.* MUST sit beside package.json, unlike ruff.toml: a flat
+      # config `import`s its plugins, and Node resolves those relative to the
+      # config file, so it has to live where that project's node_modules is.
+      - name: npm ci
+        run: |
+          set -euo pipefail
+          [ -n "${JS_DIRS}" ] || { echo "no JS/TS project — skipping"; exit 0; }
+          # `ci`, not `install` — fails on a stale lockfile instead of rewriting it
+          for d in ${JS_DIRS}; do echo "::group::npm ci ${d}"; (cd "${d}" && npm ci); echo "::endgroup::"; done
+
+      - name: eslint
+        run: |
+          set -euo pipefail
+          [ -n "${JS_DIRS}" ] || exit 0
+          for d in ${JS_DIRS}; do echo "::group::eslint ${d}"; (cd "${d}" && npx eslint --max-warnings 0 .); echo "::endgroup::"; done
+
+      - name: tsc
+        run: |
+          set -euo pipefail
+          [ -n "${JS_DIRS}" ] || exit 0
+          for d in ${JS_DIRS}; do
+            ( cd "${d}"
+              [ -f tsconfig.json ] || { echo "${d}: no tsconfig.json — skipping"; exit 0; }
+              echo "::group::tsc ${d}"
+              # `tsc -b`, NOT `tsc --noEmit`. A solution-style tsconfig — the shape
+              # Vite's React+TS starter generates — is {"files": [], "references": [...]}.
+              # --noEmit checks the EMPTY file list, does not follow references, and
+              # exits 0: a green tick over zero type checking. Build mode follows them.
+              if grep -q '"references"' tsconfig.json; then npx tsc -b --force
+              else npx tsc --noEmit; fi
+              echo "::endgroup::" )
+          done
+
+      - name: js tests
+        run: |
+          set -euo pipefail
+          [ -n "${JS_DIRS}" ] || exit 0
+          for d in ${JS_DIRS}; do
+            ( cd "${d}"
+              # `npm pkg get` is stable API; parsing `npm run` output is not.
+              if [ "$(npm pkg get scripts.test)" = "{}" ]; then
+                echo "::warning::${d} has no npm test script — no JS tests are running"; exit 0
+              fi
+              echo "::group::npm test ${d}"; npm test; echo "::endgroup::" )
+          done

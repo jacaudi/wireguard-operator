@@ -2,6 +2,17 @@ module github.com/nccloud/wireguard-operator
 
 go 1.26
 
+// PINNED DELIBERATELY, and via `toolchain` rather than by raising the `go`
+// directive above — that keeps this module's minimum requirement at 1.26 for
+// anyone importing it, while fixing the compiler CI actually uses.
+//
+// `go 1.26` on its own lets actions/setup-go install whatever patch the runner
+// image happens to ship, which made govulncheck's STDLIB findings a property of
+// the runner rather than of this repo: 7 findings on go1.26.4, zero on go1.26.6,
+// with CI observed on go1.26.7. A gate whose verdict depends on the day it ran
+// is not a gate. Renovate bumps this like any other dependency.
+toolchain go1.26.7
+
 require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-logr/logr v1.4.3

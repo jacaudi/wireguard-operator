@@ -94,8 +94,19 @@ charts/*.tgz
 # kubebuilder test assets (predates the managed block)
 testbin/*
 
-# Generated release manifest and release-it config. ANCHORED with a leading
-# slash: an unanchored `release.yaml` matches at any depth and silently
-# swallowed .github/workflows/release.yaml, which must stay tracked.
-/release.yaml
+# release_it.yaml is the throwaway manifest `make run-e2e` renders against a
+# kind cluster. ANCHORED with a leading slash: an unanchored pattern matches at
+# any depth, which is how an earlier `release.yaml` entry silently swallowed
+# .github/workflows/release.yaml.
+#
+# release.yaml IS DELIBERATELY NOT LISTED HERE. It is generated, but it is also
+# committed and is this repo's documented install path, so ci-lint.yml gates it
+# for drift against config/. It was previously both tracked AND ignored — inert,
+# because tracking wins, but a trap: the gate's own remediation is "regenerate
+# and commit", and a plain `git add release.yaml` against an ignored path is a
+# silent no-op.
 /release_it.yaml
+
+# Session handoff prompts — scaffolding for a fresh Claude Code session, not
+# project artefacts.
+docs/prompts/

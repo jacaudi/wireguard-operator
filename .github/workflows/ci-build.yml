@@ -1,0 +1,225 @@
+# Stage 2 — multi-arch image to GHCR, output pinned by DIGEST; `version` + `ref`
+# drive release builds.
+#
+# NEVER MATRIX THIS STAGE. It publishes `outputs.image`, and a matrixed job's
+# outputs are last-leg-wins with no guaranteed ordering, so smoke and retag
+# would silently receive the wrong digest. Use ci-build-check.yml for auxiliary
+# images — it declares no outputs precisely so it CAN be matrixed.
+name: ci-build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release tag to derive semver image tags from (e.g. v1.2.3). Empty for non-release builds.
+        required: false
+        default: ''
+        type: string
+      ref:
+        description: Git ref to build. Empty builds the triggering commit; a release build must pass its tag.
+        required: false
+        default: ''
+        type: string
+      image:
+        description: Image name. Defaults to ghcr.io/<owner>/<repo>.
+        required: false
+        default: ''
+        type: string
+      # NO `platforms:` INPUT, deliberately. Every container-shipping repo in
+      # this fleet builds both arches, and a knob no caller ever sets is one
+      # more input every repo carries.
+      #
+      # `context` is NOT cut with it: kiwix-helm-chart has no root Dockerfile
+      # — it is at image/Dockerfile — so a hardcoded `.` makes that repo fail
+      # with "no Dockerfile or Containerfile in .".
+      context:
+        description: Docker build context.
+        required: false
+        default: .
+        type: string
+      # LOCAL DEVIATION FROM THE TEMPLATE — `copier update` will conflict here,
+      # and the resolution is to keep this input.
+      #
+      # Upstream cut `file:` on the reasoning that a repo whose Dockerfile is
+      # elsewhere moves its `context:` instead. That resolution assumes the
+      # Dockerfile and the build context can be the same directory, and this
+      # repo is a counter-example: it publishes TWO images, images/manager and
+      # images/agent, and BOTH `COPY go.mod cmd api internal` — so both need the
+      # repo root as context while neither sits at it. `context: .` finds no
+      # ./Dockerfile; `context: images/manager` finds one but fails at the COPY.
+      # There is no answer to `build_context` that builds either image.
+      #
+      # extra_build_contexts is not the escape hatch either: ci.yaml's
+      # build-check matrix passes only `context:`, so it carries the identical
+      # constraint — and ci-build-check.yml never pushes.
+      #
+      # The block below is ci-build-check.yml's resolution logic verbatim, which
+      # already ships this exact input for the same reason. This is the template's
+      # own pattern, not a new one; it is only absent from the stage that
+      # publishes. Worth upstreaming so the deviation can be dropped.
+      file:
+        description: >-
+          Dockerfile path. Empty auto-resolves <context>/Dockerfile then
+          <context>/Containerfile, and fails loudly if neither exists.
+        required: false
+        default: ''
+        type: string
+      manifest-file:
+        description: >-
+          release-please manifest, read to verify a release build is stamped from
+          the matching checkout. Must match ci.yaml's `manifest-file:` input.
+        required: false
+        default: .github/release-please-manifest.json
+        type: string
+    secrets:
+      APP_ID:
+        description: GitHub App id. Required only to push outside this repo's own GHCR namespace.
+        required: false
+      APP_PRIVATE_KEY:
+        description: Private key for the above App
+        required: false
+    outputs:
+      image:
+        description: Pushed image reference, pinned by digest
+        value: ${{ jobs.build.outputs.image }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: build + push image
+    runs-on: ubuntu-latest
+    # A CEILING, not an estimate. Without one the job inherits GitHub's
+    # 360-minute default, so a step that hangs — a registry that never answers,
+    # a QEMU build that livelocks — burns six hours of a runner before anyone
+    # is told. This is the slowest stage in the fleet (multi-arch, arm64 under
+    # emulation) and 60 is still well clear of any observed build.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+    env:
+      APP_ID: ${{ secrets.APP_ID }}
+      # GHCR rejects uppercase refs; owner/repo casing is not guaranteed.
+      IMAGE: ${{ inputs.image != '' && inputs.image || format('ghcr.io/{0}', github.repository) }}
+    steps:
+      - name: Normalise the image name to lowercase
+        run: echo "IMAGE=$(printf '%s' "${IMAGE}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # buildx defaults to <context>/Dockerfile and does NOT know about
+      # Containerfile, so an OCI-named repo fails with
+      #   failed to read dockerfile: open Dockerfile: no such file or directory
+      # Resolve it here rather than making every caller pass `file:`.
+      #
+      # An explicit `file:` wins; otherwise resolution is by convention, and a
+      # miss is a loud failure either way. See the `file:` input above for why
+      # this repo needs the override that upstream cut.
+      - name: Resolve the Dockerfile / Containerfile
+        env:
+          CONTEXT: ${{ inputs.context }}
+          FILE: ${{ inputs.file }}
+        run: |
+          set -euo pipefail
+          if [ -n "${FILE}" ]; then
+            [ -f "${FILE}" ] || { echo "::error::file input '${FILE}' does not exist"; exit 1; }
+            resolved="${FILE}"
+          elif [ -f "${CONTEXT}/Dockerfile" ]; then
+            resolved="${CONTEXT}/Dockerfile"
+          elif [ -f "${CONTEXT}/Containerfile" ]; then
+            resolved="${CONTEXT}/Containerfile"
+          else
+            echo "::error::no Dockerfile or Containerfile in ${CONTEXT}"
+            exit 1
+          fi
+          echo "building from ${resolved}"
+          echo "DOCKERFILE=${resolved}" >> "$GITHUB_ENV"
+
+      - name: Verify the checkout matches the release being stamped
+        if: ${{ inputs.version != '' }}
+        env:
+          WANT: ${{ inputs.version }}
+          # Kept in step with ci.yaml's `manifest-file:` input. Both default to
+          # .github/; a repo that keeps the manifest at the root overrides here
+          # and there together.
+          MANIFEST: ${{ inputs.manifest-file }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "${MANIFEST}" ]; then
+            echo "::error::${MANIFEST} missing — cannot verify ${WANT}"
+            exit 1
+          fi
+          have="v$(jq -r '.["."]' "${MANIFEST}")"
+          echo "tag being stamped: ${WANT}"
+          echo "manifest reports:  ${have}"
+          [ "${WANT}" = "${have}" ] || { echo "::error::refusing to publish ${WANT} from a checkout that reports ${have}"; exit 1; }
+
+      - name: Generate a GitHub App token
+        id: app-token
+        if: ${{ env.APP_ID != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=sha
+            type=raw,priority=1000,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern=v{{version}},value=${{ inputs.version }}
+            type=semver,pattern=v{{major}}.{{minor}},value=${{ inputs.version }}
+            type=semver,pattern=v{{major}},value=${{ inputs.version }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ steps.app-token.outputs.token && 'x-access-token' || github.actor }}
+          password: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ env.DOCKERFILE }}
+          pull: true
+          push: true
+          # The literal the cut `platforms:` input always defaulted to.
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
+          provenance: mode=min   # NOT max — max embeds build-args and secrets in the attestation
+
+      # `env:`, not direct interpolation. A build digest is not attacker
+      # controlled, but scripts/run-interpolation.sh admits no exceptions on
+      # purpose: a reviewer cannot tell the safe interpolations from the unsafe
+      # ones at a glance, and a rule with exceptions is a rule nobody applies.
+      - name: Expose image reference (by digest)
+        id: ref
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "image=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"

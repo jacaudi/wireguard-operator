@@ -1,0 +1,219 @@
+# Orchestrator — the ONLY file here with an `on:` block. Every stage is a LOCAL
+# reusable workflow sitting beside this one; nothing below is implementation.
+#
+# The stages are files this repo owns, written here by the template, so a run
+# can never be changed by anything outside this commit. `copier update` is what
+# moves them forward.
+#
+# A local `uses: ./…` pointing at a missing COMPOSITE ACTION is silent to
+# actionlint (a missing reusable workflow it does catch), so ci-lint.yml
+# runs scripts/local-refs.sh to catch a stage this repo does not ship. That gate
+# strips a leading `#` before matching, so DO NOT disable a job by commenting it
+# out — a commented reference to an absent stage still fails. Delete it instead.
+#
+# REQUIRES APP SECRETS. GITHUB_TOKEN cannot trigger workflows, so without
+# APP_ID/APP_PRIVATE_KEY release-please's own release PR gets no run, `ci` never
+# reports, and the PR is unmergeable forever with no error explaining why.
+name: CI
+
+# push only, no pull_request — branch-push checks surface on the PR anyway.
+# KNOWN GAP: fork PRs get no CI at all.
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    uses: ./.github/workflows/ci-lint.yml
+
+  # A SEPARATE STAGE, deliberately. `services:` is a job-level key, so neither a
+  # composite action nor a called workflow can declare one on the caller's
+  # behalf, and the caller cannot inject it — which is why this cannot fold into
+  # ci-lint.yml. It joins the `ci` gate below like any other stage.
+  integration:
+    uses: ./.github/workflows/ci-integration.yml
+
+  # KNOWN COVERAGE GAP, RECORDED HERE ON PURPOSE — there is no e2e stage.
+  #
+  # The pull-request-workflow.yaml this pipeline replaces ran a third tier: a
+  # kind cluster via `make run-e2e`, exercising internal/it behind the `e2e`
+  # build tag. The template models two tiers (unit in ci-lint, envtest in
+  # ci-integration) and has no equivalent, so swapping pipelines drops that tier.
+  #
+  # NOT restored here, deliberately. internal/it carries a known race — the
+  # wstunnel-sidecar spec waits on Deployment READINESS, which the pre-patch
+  # Deployment already satisfies, so it can assert before the controller has
+  # rebuilt the pod spec. Wiring an intermittently-red suite into `ci`, the single
+  # required check, would leave main randomly unmergeable. The correct fix is to
+  # wait on status.observedGeneration catching up to metadata.generation; issue #2
+  # narrows the window but does not close it.
+  #
+  # `make run-e2e` still works locally and is the way to run this tier today.
+  # Restoring it as a stage is follow-up work that depends on fixing that wait
+  # first — a flaky required gate is worse than an honest gap.
+
+  # Always multi-arch, always pushed. Outputs a DIGEST-pinned ref.
+  #
+  # No App secrets: passing them here does not merely do nothing, it FAILS —
+  # ci-build logs in with the App token whenever APP_ID is non-empty, and a
+  # typical App installation has no package-write grant.
+  #
+  # `image:` IS EMITTED HERE AND ON EVERY OTHER STAGE THAT TAKES ONE — see the
+  # note on release-image below. The condition is `image_name` being non-empty,
+  # not a comparison against a rendered `ghcr.io/<owner>/<repo>` literal: the
+  # owner is not knowable at render time, and duplicating a guess at it here was
+  # the second copy of a literal that belonged in neither file.
+  build:
+    needs: [lint]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      image: ghcr.io/jacaudi/wireguard-operator/manager
+      # Both images build from the REPO ROOT — they COPY go.mod, cmd, api and
+      # internal — so the context is `.` for both and only the Dockerfile path
+      # differs. See ci-build.yml's `file:` input for why that input exists here
+      # and not upstream.
+      file: images/manager/Dockerfile
+
+  # THE SECOND PUBLISHED IMAGE. The template models exactly one, and its
+  # `extra_build_contexts` are compile-check-only — they route to
+  # ci-build-check.yml, which declares no outputs and never pushes. The agent
+  # must actually be published: the manager takes it as a runtime argument
+  # (`--agent-image=` in config/default/manager_args_patch.yaml), so an
+  # unpublished agent means the operator points at an image that does not exist.
+  #
+  # A SEPARATE JOB, NOT A MATRIX LEG. ci-build.yml declares `outputs.image`, and
+  # a matrixed job's outputs are last-leg-wins with no guaranteed ordering — so
+  # matrixing it would hand `smoke` whichever digest finished last. Two jobs each
+  # own their own outputs.
+  build-agent:
+    needs: [lint]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      image: ghcr.io/jacaudi/wireguard-operator/agent
+      file: images/agent/Dockerfile
+
+  # Boot the built image and assert it behaves. What "behaves" means is repo
+  # knowledge, so it lives in `task smoke` — the one place CI still calls the
+  # taskfile.
+  #
+  # MANAGER ONLY, and that is a known gap rather than an oversight: `task smoke`
+  # asserts the manager binary runs and exposes `-agent-image`. The agent's
+  # equivalent needs its own assertion, which is a separate piece of repo
+  # knowledge and a separate change.
+  smoke:
+    needs: [build]
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/ci-smoke.yml
+    with:
+      image: ${{ needs.build.outputs.image }}
+
+  # main only. An ordinary main push opens/updates the release PR; merging that
+  # PR creates the tag and the GitHub Release.
+  #
+  # ci-release.yml declares APP_ID and APP_PRIVATE_KEY as REQUIRED, with no
+  # GITHUB_TOKEN fallback — deliberately, and the one thing here never to
+  # "improve". GITHUB_TOKEN cannot trigger workflows, so a silent fallback opens a
+  # release PR that never gets a run, never reports `ci`, and is unmergeable
+  # forever with nothing explaining why. Both secrets are set on this repo
+  # (verified: actions/secrets reports APP_ID and APP_PRIVATE_KEY).
+  #
+  # The manifest is seeded at 2.11.0 — the version this fork's tree descends
+  # from — via .github/release-please-manifest.json and never via `release-as`,
+  # which is a permanent override rather than a bootstrap.
+  release:
+    needs: [smoke]
+    if: ${{ github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/ci-release.yml
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+
+  # RETAG, not rebuild. release-please tags the release PR's merge commit — the
+  # exact commit `build` just built — so the published image is the same digest
+  # that passed smoke, which a rebuild cannot guarantee.
+  #
+  # `image:` IS NOT OPTIONAL. Every stage taking this input falls back to
+  # ghcr.io/<owner>/<repo> on its own, so omitting it is not silence — it is a
+  # DIFFERENT repository, and the final digest-confirm step would re-inspect the
+  # wrong one and compare it against itself.
+  release-image:
+    needs: [build, release]
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci-retag.yml
+    with:
+      source: ${{ needs.build.outputs.image }}
+      version: ${{ needs.release.outputs.tag_name }}
+      image: ghcr.io/jacaudi/wireguard-operator/manager
+
+  # THE AGENT NEEDS ITS OWN RETAG, and its absence would not fail anything.
+  # ci-retag.yml takes a single source/image pair, so the second published image
+  # needs a second call. Without this job the agent keeps only its :sha and
+  # :latest tags from `build-agent` and silently never receives v1.2.3, v1.2 or
+  # v1 — while the manager does, so the two images drift apart at exactly the
+  # tags anyone deploying by version would use. The manager's --agent-image
+  # default points at a versioned agent tag, so that gap is not cosmetic.
+  release-image-agent:
+    needs: [build-agent, release]
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci-retag.yml
+    with:
+      source: ${{ needs.build-agent.outputs.image }}
+      version: ${{ needs.release.outputs.tag_name }}
+      image: ghcr.io/jacaudi/wireguard-operator/agent
+
+  # THE single required status check — point every ruleset at `ci` and nothing
+  # else. A REGULAR job, never a called workflow: a job that CALLS a reusable
+  # workflow reports as `<caller> / <inner>`, which no single-context ruleset
+  # can require.
+  ci:
+    # build-agent IS IN THIS LIST, and it has to be. A stage absent from `needs`
+    # can fail without failing `ci`, so a broken agent image would merge green —
+    # the same fail-open shape as a required check that is merely skipped.
+    needs: [lint, integration, build, build-agent, smoke]
+    # MANDATORY. Without it this job is SKIPPED when an upstream fails, and
+    # GitHub accepts a skipped required check as SATISFIED.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert required stages
+        env:
+          LINT: ${{ needs.lint.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+          BUILD: ${{ needs.build.result }}
+          BUILD_AGENT: ${{ needs.build-agent.result }}
+          SMOKE: ${{ needs.smoke.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for stage in lint:"${LINT}" integration:"${INTEGRATION}" build:"${BUILD}" build-agent:"${BUILD_AGENT}" smoke:"${SMOKE}"; do
+            name="${stage%%:*}"; result="${stage##*:}"
+            printf '%-12s %s (must be success)\n' "${name}" "${result}"
+            [ "${result}" = "success" ] || fail=1
+          done
+          [ "${fail}" = "0" ] || { echo "::error::one or more required stages did not pass"; exit 1; }
