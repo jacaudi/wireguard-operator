@@ -85,7 +85,11 @@ func syncAddress(iface string, ipWithMask *net.IPNet, family int) error {
 }
 
 func createLinkUsingUserspaceImpl(iface string, wgUserspaceImplementationFallback string) error {
-	// Ensure /dev/net exists
+	// Ensure /dev/net exists.
+	// #nosec G301 -- 0755 is deliberate and not a permissive default. This is
+	// the conventional mode for /dev/net, and the directory must stay
+	// world-traversable so a non-root process can reach /dev/net/tun through it.
+	// Tightening it to 0750 breaks the userspace tunnel it exists to enable.
 	if err := os.MkdirAll("/dev/net", 0o755); err != nil {
 		return err
 	}
@@ -95,6 +99,11 @@ func createLinkUsingUserspaceImpl(iface string, wgUserspaceImplementationFallbac
 	if err != nil {
 		if os.IsNotExist(err) {
 			mode := uint32(syscall.S_IFCHR | 0o666)
+			// #nosec G115 -- both arguments are compile-time constants: major 10,
+			// minor 200 is the fixed device number for /dev/net/tun. Mkdev packs
+			// them into 0x0A000200, which fits an int on every platform this
+			// builds for, so the uint64 -> int conversion cannot overflow. No
+			// value here is derived from input.
 			dev := int(unix.Mkdev(10, 200))
 			if err := unix.Mknod("/dev/net/tun", mode, dev); err != nil {
 				return fmt.Errorf("mknod /dev/net/tun failed: %w", err)
@@ -109,7 +118,13 @@ func createLinkUsingUserspaceImpl(iface string, wgUserspaceImplementationFallbac
 		}
 	}
 
-	// Launch userspace implementation (e.g., wireguard-go) to create the interface
+	// Launch userspace implementation (e.g., wireguard-go) to create the interface.
+	// #nosec G204 -- neither argument is user input. The binary name comes from
+	// the agent's own --wg-userspace-implementation-fallback flag, set by the
+	// operator in the Deployment it renders, and iface is the --wg-iface flag
+	// from the same place. A peer cannot influence either. exec.Command takes
+	// argv directly rather than going through a shell, so there is nothing to
+	// quote or inject into.
 	cmd := exec.Command(wgUserspaceImplementationFallback, iface)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting userspace implementation %q failed: %w", wgUserspaceImplementationFallback, err)

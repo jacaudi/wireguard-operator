@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/nccloud/wireguard-operator/api/v1alpha1"
@@ -130,5 +131,18 @@ func StartMetricsServer(bindAddress string, log logr.Logger) error {
 		}
 	}
 	log.Info("starting metrics endpoint", "addr", addr)
-	return http.ListenAndServe(addr, mux)
+	// An explicit http.Server rather than http.ListenAndServe, which offers no
+	// way to set timeouts at all — leaving this endpoint open to a client that
+	// holds connections without completing a request. Same reasoning as the
+	// health listener in cmd/agent; the values are set independently because the
+	// two endpoints are free to diverge.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	return srv.ListenAndServe()
 }

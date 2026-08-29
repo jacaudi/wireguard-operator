@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -137,6 +137,10 @@ func OnStateChange(path string, logger logr.Logger, onFileChange func(State)) (f
 
 func GetDesiredState(path string) (State, string, error) {
 	var state State
+	// #nosec G304 -- path is the operator's own --state flag (a fixed mount
+	// point inside the pod), not attacker-controlled input. The agent must be
+	// able to read whatever file it was pointed at; constraining it to a literal
+	// would break the flag it exists to serve.
 	jsonFile, err := os.ReadFile(path)
 	if err != nil {
 		return State{}, "", err
@@ -145,7 +149,12 @@ func GetDesiredState(path string) (State, string, error) {
 	if err != nil {
 		return State{}, "", err
 	}
-	hash := md5.Sum(jsonFile)
+	// SHA-256 rather than MD5. The digest is only used to detect that the
+	// desired state changed, so collision resistance is not strictly required —
+	// but this file carries the server private key and every peer's
+	// configuration, and shipping a known-broken primitive over that material is
+	// not worth the two lines it saves.
+	hash := sha256.Sum256(jsonFile)
 
 	return state, hex.EncodeToString(hash[:]), nil
 }
