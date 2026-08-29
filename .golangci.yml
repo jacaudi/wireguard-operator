@@ -94,6 +94,18 @@ issues:
   # The 8 gosec findings were NOT ratcheted away: they are fixed in the same
   # commit that adds this file, because a leaked key or an unbounded read in a
   # VPN data plane is not lint debt. See the commit body for each one.
+  #
+  # THIS LINE REQUIRES `fetch-depth: 0` IN EVERY WORKFLOW THAT RUNS THE LINTER,
+  # AND IT FAILS OPEN. golangci-lint needs the merge base present locally to
+  # compute the diff; at the default checkout depth of 1 it is not, and rather
+  # than erroring, golangci-lint emits
+  #   "Can't process results by diff processor: ... could not read git repo"
+  # as a WARNING and then reports the entire tree. Observed on this repo: 113
+  # findings and a red gate that said nothing about the change under review.
+  #
+  # A ratchet that silently becomes a no-op is worse than no ratchet, because
+  # the protection is believed to be there. If you see the full debt reported on
+  # a small diff, check the checkout depth before touching this file.
   new-from-merge-base: origin/main
 
 formatters:
