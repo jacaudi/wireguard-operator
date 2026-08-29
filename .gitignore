@@ -1,30 +1,101 @@
+# --- managed by copier: regenerated on `copier update`; add your own BELOW the end marker ---
+# Base fragment; language fragments are appended.
 
-# Binaries for programs and plugins
+# OS junk
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+*.iml
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Merge/patch leftovers
+*.orig
+*.rej
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/testdata/**/*.pem
+!**/testdata/**/*.key
+
+# Local tooling
+.worktrees/
+bin/
+dist/
+coverage/
+*.out
+!.gitkeep
+
+# Go
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-bin
+*.test
+vendor/
+go.work
+go.work.sum
+
+# kubebuilder / operator-sdk local state
+*.kubeconfig
+config/**/*.local.yaml
+
+# Node / JS / TS — lockfiles ARE committed (npm ci depends on them)
+node_modules/
+.npm
+.eslintcache
+*.tsbuildinfo
+.vite/
+.next/
+.nuxt/
+.turbo/
+npm-debug.log*
+yarn-error.log*
+
+# Python — uv.lock IS committed (it is what makes the env reproducible)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ty_cache/
+
+# Helm — built subchart tarballs. Chart.lock is the source of truth and
+# `helm dependency build` regenerates these, so committing them creates a second
+# representation that Renovate CANNOT update: it bumps the version in Chart.yaml
+# and the stale .tgz silently stays. All five chart repos in this fleet currently
+# commit one.
+# Chart.lock itself IS committed — do not add it here.
+charts/*.tgz
+**/charts/*.tgz
+# --- end managed ---
+# Repo-specific entries below this line are preserved across regeneration.
+
+# kubebuilder test assets (predates the managed block)
 testbin/*
 
-# Test binary, build with `go test -c`
-*.test
-
-# Output of the go coverage tool, specifically when used with LiteIDE
-*.out
-
-# Kubernetes Generated files - skip generated files, except for vendored files
-
-!vendor/**/zz_generated.*
-
-# editor and IDE paraphernalia
-.idea
-*.swp
-*.swo
-*~
-.DS_Store
-
-#
-release.yaml
-release_it.yaml
+# Generated release manifest and release-it config. ANCHORED with a leading
+# slash: an unanchored `release.yaml` matches at any depth and silently
+# swallowed .github/workflows/release.yaml, which must stay tracked.
+/release.yaml
+/release_it.yaml

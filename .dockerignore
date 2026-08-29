@@ -1,4 +1,56 @@
-# More info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
-# Ignore build and test binaries.
-bin/
-testbin/
+# --- managed by copier: regenerated on `copier update`; add your own BELOW the end marker ---
+# Goes at the BUILD CONTEXT root, not beside the Dockerfile.
+
+# Version control — biggest context bloat and a real leak risk
+.git
+.gitignore
+.gitattributes
+.github
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies and build output — rebuilt inside the image
+node_modules
+vendor
+target
+__pycache__
+.venv
+venv
+bin
+dist
+coverage
+
+# Tooling and CI config the image never needs
+.golangci.yml
+.yamllint.yml
+.hadolint.yaml
+ruff.toml
+eslint.config.mjs
+taskfile.yml
+.taskfiles
+Makefile
+renovate.json
+
+# Docs and local junk
+docs
+*.md
+!README.md
+.DS_Store
+Thumbs.db
+*.swp
+.worktrees
+.idea
+.vscode
+
+# Test fixtures.
+# CAUTION: delete these two lines if this repo's Dockerfile runs `go mod tidy` —
+# tidy computes requirements from the whole module INCLUDING tests, so stripping
+# *_test.go changes what it resolves.
+**/testdata
+**/*_test.go
+# --- end managed ---

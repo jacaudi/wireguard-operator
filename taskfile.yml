@@ -1,0 +1,152 @@
+# LOCAL DEVELOPER ENTRY POINT. Lowercase filename — `Taskfile.yml` is invisibly
+# different on macOS and genuinely different on a Linux runner.
+#
+# DEVIATION D1: CI does NOT call this file. ci-lint.yml invokes each tool as its
+# own step so GitHub can attribute annotations and timing per check. This file
+# exists so you can run the same checks locally, before pushing.
+#
+# THE CONTRACT THAT MATTERS: `task ci` here must stay equivalent to the steps in
+# .github/workflows/ci-lint.yml. If they drift, this file stops predicting CI and
+# becomes worse than useless — you would trust a green local run that CI rejects.
+#
+# What keeps them honest without duplicating knowledge:
+#   - The RULES live in the config files, read by both paths:
+#       .golangci.yml  .yamllint.yml  .hadolint.yaml  ruff.toml  eslint.config.mjs
+#   - Tool VERSIONS live once, in .github/actions/setup/action.yml. Install
+#     locally to match; do not float.
+#   - Real logic lives in scripts/, which BOTH the stages and this file call.
+#     This file is LOCAL DEV ONLY; it never reimplements a script.
+# Only the invocation is duplicated, and an invocation is shared shape, not
+# shared knowledge.
+#
+# `task smoke` is the ONE target CI still calls (from ci-smoke.yml), because what
+# "the image behaves" means is repo knowledge, not pipeline knowledge.
+version: '3'
+
+includes:
+  repo:
+    taskfile: .taskfiles/repo.yml
+
+  # --- one entry per language present ---
+  #
+  # Where the lint configs live differs BY TOOL, and it is not a style choice:
+  #   ruff.toml        REPO ROOT. ruff walks up from each file, so one root
+  #                    config covers every Python project. Verified. A project
+  #                    needing different rules drops its own with
+  #                    `extend = "../ruff.toml"` rather than a second full copy.
+  #   eslint.config.*  BESIDE package.json, never the root — a flat config
+  #                    `import`s its plugins and Node resolves those relative to
+  #                    the config file, so it must sit where that project's
+  #                    node_modules is. One per JS project, unavoidably.
+  #
+  # Rust would be added the same way; nothing in this fleet uses it.
+  go:
+    taskfile: .taskfiles/go.yml
+    # dir: svc      # only if go.mod is NOT at the repo root — leave commented otherwise.
+    # Every target in go.yml is a module-root operation, the same reason
+    # ci-lint.yml gives each of its Go steps `working-directory:` from the setup
+    # action's `godir` output. Unlike node/python this one fails loudly when it
+    # is wrong (`go.mod file not found in current directory or any parent
+    # directory`), so it is a note rather than a trap.
+
+  # `dir:` names THIS repo's project directory, and it is RENDERED COMMENTED OUT
+  # ON PURPOSE — copier cannot know where your code lives, and a guess here is
+  # not a harmless placeholder. Task CREATES a `dir:` that does not exist, so a
+  # rendered `dir: web` in a repo whose JS is at the root silently made an empty
+  # web/, ran eslint over nothing and reported success, while the actual sources
+  # went unlinted. Left off, the project is the repo root and a wrong guess is
+  # immediately loud: `npm ci` and `uv sync` both fail with ENOENT.
+  #
+  # So: leave it commented when the project IS the repo root (ws4kp,
+  # tempest-display), and uncomment with the real directory otherwise.
+  # ci-lint.yml does NOT hardcode these; it discovers them with
+  # scripts/discover-dirs.sh, because that file is copied in verbatim while this
+  # one is per-repo config.
+
+  # Chart repos only — delete this include if the repo ships no Helm chart.
+  # NOT given a `dir:`: chart.yml runs from the repo root because generation
+  # reads config/ and the drift gate diffs against the whole worktree.
+
+tasks:
+  default:
+    desc: List all tasks
+    cmds:
+      - task --list
+
+  ci:
+    desc: Everything ci-lint.yml runs. Run this before pushing.
+    cmds:
+      - task: repo:ci
+      - task: go:ci
+
+  lint:
+    desc: Static checks only — no tests
+    cmds:
+      - task: repo:ci
+      - task: go:lint
+
+  test:
+    desc: Unit tests only
+    cmds:
+      - task: go:test
+
+  fmt:
+    desc: Apply every available autofix
+    cmds:
+      - task: go:fmt
+
+  build:
+    desc: Build binaries into ./bin/
+    cmds:
+      - task: go:build
+
+  # CALLED BY CI (ci-smoke.yml). Fill in per repo — what "behaves" means is
+  # repo-specific and is exactly the knowledge the pipeline should not hold.
+  # Locally:  IMAGE=ghcr.io/owner/repo@sha256:... task smoke
+  smoke:
+    desc: Boot the built image and assert it behaves
+    requires:
+      vars: [IMAGE]
+    # Accepts BOTH `IMAGE=… task smoke` and `task smoke IMAGE=…`. Without this,
+    # the CLI form satisfies `requires` but leaves $IMAGE empty in the shell.
+    env:
+      IMAGE: '{{.IMAGE}}'
+    # NOT the stock "boot it and curl :8080" body, which cannot work here and
+    # would have failed on the first release. Two reasons, both structural:
+    #
+    #   1. The manager calls ctrl.GetConfigOrDie() before it serves anything, so
+    #      with no kubeconfig and no in-cluster service account it exits 1. A
+    #      readiness poll would time out against a container that was never
+    #      going to listen.
+    #   2. Its metrics listener on :8080 is wrapped in
+    #      WithAuthenticationAndAuthorization, so even in-cluster an unauthenticated
+    #      GET is a 401 — `curl -sf` treats that as failure. The health probes are
+    #      on :8081, not :8080, so the stock port is wrong as well.
+    #
+    # What is left that is still worth asserting without a cluster: the image
+    # runs, the binary inside it is the right architecture, and it is the manager
+    # rather than some other binary that got copied in. `--help` proves all three
+    # and is deterministic — Go's flag package prints usage and exits 0 (verified;
+    # it is ErrHelp, not the exit-2 path an unknown flag takes).
+    cmds:
+      - |
+        set -eu
+        echo "smoke testing ${IMAGE}"
+        out=$(docker run --rm "${IMAGE}" --help 2>&1) || {
+          echo "${out}"
+          echo "::error::manager did not run in ${IMAGE}"; exit 1
+        }
+        printf '%s\n' "${out}" | grep -q -- '-agent-image' || {
+          printf '%s\n' "${out}"
+          echo "::error::binary ran but does not look like the manager (no -agent-image flag)"; exit 1
+        }
+        echo "ok: manager binary runs and exposes its flags"
+
+  # Convenience only — CI builds images itself via ci-build.yml.
+  image:
+    desc: Build the image locally (single-arch, not pushed)
+    cmds:
+      - docker build -t "{{.REPO_NAME}}:dev" .
+    vars:
+      REPO_NAME:
+        sh: basename "$(git rev-parse --show-toplevel)"

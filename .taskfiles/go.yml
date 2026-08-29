@@ -1,0 +1,76 @@
+# Go module — checks fail on drift, never fix it.
+version: '3'
+
+tasks:
+  ci:
+    desc: All Go checks
+    cmds:
+      - task: fmt:check
+      - task: tidy:check
+      - task: lint
+      - task: vuln
+      - task: test
+
+  lint:
+    desc: golangci-lint
+    cmds:
+      - golangci-lint run
+
+  fmt:
+    desc: Format Go sources
+    cmds:
+      - golangci-lint fmt
+
+  fmt:check:
+    desc: Fail if sources are unformatted
+    cmds:
+      - golangci-lint fmt --diff
+
+  tidy:check:
+    desc: Fail if go.mod/go.sum are not tidy
+    cmds:
+      - go mod tidy -diff   # -diff exits non-zero; a bare `tidy` MUTATES go.mod in CI
+
+  vuln:
+    desc: Scan dependencies for known vulnerabilities
+    cmds:
+      # Installed pinned by the setup action; @latest would be a live fetch on
+      # every run in a pipeline whose whole thesis is pinning.
+      - |
+        set -eu
+        command -v govulncheck >/dev/null \
+          || { echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest" >&2; exit 1; }
+        govulncheck ./...
+
+  test:
+    desc: Run tests with the race detector
+    # UNIT TESTS ONLY, and that is the same split ci-lint.yml makes: it runs a
+    # bare `go test ./...` with no envtest assets, so anything needing a
+    # control plane must be excluded by a build tag or it fails there.
+    # This repo has two tiers already:
+    #   -tags=integration  internal/controller — envtest (downloaded binaries)
+    #   -tags=e2e          internal/it         — a real cluster
+    # Neither is reachable from here, deliberately.
+    cmds:
+      - go test ./... -race
+
+  integration:
+    desc: Run the envtest suite (downloads a control plane on first use)
+    # Mirrors ci-integration.yml. Kept here because tagging the controller suite
+    # out of `test` would otherwise leave no local way to run it at all.
+    #
+    # ENVTEST_K8S_VERSION tracks the version ci-integration.yml pins. The two
+    # are separate copies of one number; if you change one, change the other.
+    cmds:
+      - |
+        set -eu
+        command -v setup-envtest >/dev/null \
+          || { echo "setup-envtest not installed: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest" >&2; exit 1; }
+        assets=$(setup-envtest use "${ENVTEST_K8S_VERSION:-1.30.0}" -p path)
+        echo "KUBEBUILDER_ASSETS=${assets}"
+        KUBEBUILDER_ASSETS="${assets}" go test ./... -race -tags=integration
+
+  build:
+    desc: Build binaries into ./bin/
+    cmds:
+      - go build -o bin/ ./...

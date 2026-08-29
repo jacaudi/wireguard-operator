@@ -1,10 +1,108 @@
+# Fleet baseline, golangci-lint v2 schema. A floor, not a ceiling.
 version: "2"
 
+run:
+  timeout: 5m
+  tests: true
+  allow-parallel-runners: true
+  # REPO-SPECIFIC. Without this, golangci-lint honours build constraints and
+  # simply does not see a file tagged out of the default build — so the envtest
+  # suite (`integration`) and the cluster suite (`e2e`) would go unlinted, and
+  # the debt count would drop by 16 findings that were never fixed, only hidden.
+  # Measured: 93 findings without these tags, 109 with them.
+  build-tags:
+    - integration
+    - e2e
+
 linters:
+  default: none
   enable:
+    - bodyclose
+    - dupl
+    - errcheck
+    - errorlint
+    - gocritic
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - modernize
+    - nolintlint
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
     - unparam
+    - unused
+
+  settings:
+    revive:
+      rules:
+        - name: var-naming
+        - name: package-comments
+        - name: exported
+        - name: error-return
+        - name: error-naming
+        - name: indent-error-flow
+        - name: unexported-return
+        - name: comment-spacings
+        - name: import-shadowing
+    gocyclo:
+      min-complexity: 15
+    errorlint:
+      asserts: true
+      comparison: true
+      errorf: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    gosec:
+      excludes:
+        - G104  # errcheck covers unhandled errors, and better
+
   exclusions:
+    generated: lax
     rules:
       - path: _test\.go
-        linters:
-          - unparam
+        linters: [gocyclo, dupl, gosec, errcheck, unparam, prealloc]
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # MIGRATION RATCHET — uncomment when adopting this baseline on code that
+  # predates it. Reports only issues in code changed since the merge base, so the
+  # standard applies going forward without blocking the migration on existing
+  # debt. Valid in the v2 schema.
+  #
+  # Measure before deciding: a repo with no prior lint config can surface well
+  # over a hundred findings, and `golangci-lint run --fix` resolves NONE of them
+  # (tested). See the full debt any time with:
+  #   golangci-lint run --new-from-merge-base=""
+  #
+  # ENABLED HERE, DELIBERATELY. Measured on this repo at adoption: 117 findings
+  # — 88 revive, 8 gosec, 8 nolintlint, 5 gocyclo, 3 gocritic, 2 errorlint,
+  # 2 modernize, 1 prealloc. The five gocyclo hits are the reconcile loop
+  # (`Reconcile` at cyclomatic complexity 121, `updateWireguardPeers` at 42),
+  # which issue #2 replaces wholesale — absorbing them by hand would mean
+  # editing code that is about to be rewritten.
+  #
+  # The 8 gosec findings were NOT ratcheted away: they are fixed in the same
+  # commit that adds this file, because a leaked key or an unbounded read in a
+  # VPN data plane is not lint debt. See the commit body for each one.
+  new-from-merge-base: origin/main
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
