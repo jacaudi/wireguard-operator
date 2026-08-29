@@ -16,6 +16,16 @@
 # README rule was right and this file was wrong. GITHUB_TOKEN reaches every
 # package under the repo's own owner that this repo created, which is what both
 # the ordinary pipeline and this repair path push to.
+#
+# REPAIRS THE MANAGER ONLY — a known limit, not an oversight. This repo publishes
+# two images, but both the retag and rebuild paths here take a single hardcoded
+# IMAGE, and `task smoke` only knows how to assert the manager binary. Extending
+# it would mean threading an image choice through all three jobs plus teaching
+# smoke a second shape, which is real work with no incident asking for it yet.
+# To repair the agent by hand:
+#   docker buildx imagetools create \
+#     -t ghcr.io/jacaudi/wireguard-operator/agent:vX.Y.Z \
+#     ghcr.io/jacaudi/wireguard-operator/agent:sha-<short>
 name: release-republish
 
 on:

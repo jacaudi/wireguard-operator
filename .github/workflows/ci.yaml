@@ -123,30 +123,68 @@ jobs:
     with:
       image: ${{ needs.build.outputs.image }}
 
-  # NO `release` / `release-image` JOBS YET — DELIBERATELY OMITTED, NOT LOST.
+  # main only. An ordinary main push opens/updates the release PR; merging that
+  # PR creates the tag and the GitHub Release.
   #
-  # ci-release.yml declares APP_ID and APP_PRIVATE_KEY as REQUIRED secrets with
-  # no GITHUB_TOKEN fallback, and this repo has neither: `gh api
-  # repos/jacaudi/wireguard-operator/actions/secrets` returns total_count 0, with
-  # no environments and no org (the owner is a personal account). Wiring the jobs
-  # anyway would open a release PR that never gets a run, never reports `ci`, and
-  # is unmergeable forever — the exact failure ci-release.yml's own comments
-  # describe.
+  # ci-release.yml declares APP_ID and APP_PRIVATE_KEY as REQUIRED, with no
+  # GITHUB_TOKEN fallback — deliberately, and the one thing here never to
+  # "improve". GITHUB_TOKEN cannot trigger workflows, so a silent fallback opens a
+  # release PR that never gets a run, never reports `ci`, and is unmergeable
+  # forever with nothing explaining why. Both secrets are set on this repo
+  # (verified: actions/secrets reports APP_ID and APP_PRIVATE_KEY).
   #
-  # The stage files, .github/release-please-config.json and the manifest seeded at
-  # 2.11.0 are all committed, so restoring these two jobs is purely additive: set
-  # the secrets with `hopsctl github secrets --repo jacaudi/wireguard-operator`,
-  # then re-add `release` (needs: [smoke], main-only, calling ci-release.yml) and
-  # `release-image` (needs: [build, release], calling ci-retag.yml with
-  # image: ghcr.io/jacaudi/wireguard-operator/manager).
+  # The manifest is seeded at 2.11.0 — the version this fork's tree descends
+  # from — via .github/release-please-manifest.json and never via `release-as`,
+  # which is a permanent override rather than a bootstrap.
+  release:
+    needs: [smoke]
+    if: ${{ github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/ci-release.yml
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+
+  # RETAG, not rebuild. release-please tags the release PR's merge commit — the
+  # exact commit `build` just built — so the published image is the same digest
+  # that passed smoke, which a rebuild cannot guarantee.
   #
-  # THE AGENT WILL NEED A RETAG JOB OF ITS OWN at that point. ci-retag.yml takes a
-  # single `source`/`image` pair, so the second published image needs a second
-  # call — omitting it does not fail, it silently leaves the agent without its
-  # v1.2.3 / v1.2 / v1 / latest tags while the manager gets them.
-  #
-  # release-republish.yml is likewise dormant until then: it is workflow_dispatch
-  # only, so it costs nothing sitting here, and it repairs the manager only.
+  # `image:` IS NOT OPTIONAL. Every stage taking this input falls back to
+  # ghcr.io/<owner>/<repo> on its own, so omitting it is not silence — it is a
+  # DIFFERENT repository, and the final digest-confirm step would re-inspect the
+  # wrong one and compare it against itself.
+  release-image:
+    needs: [build, release]
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci-retag.yml
+    with:
+      source: ${{ needs.build.outputs.image }}
+      version: ${{ needs.release.outputs.tag_name }}
+      image: ghcr.io/jacaudi/wireguard-operator/manager
+
+  # THE AGENT NEEDS ITS OWN RETAG, and its absence would not fail anything.
+  # ci-retag.yml takes a single source/image pair, so the second published image
+  # needs a second call. Without this job the agent keeps only its :sha and
+  # :latest tags from `build-agent` and silently never receives v1.2.3, v1.2 or
+  # v1 — while the manager does, so the two images drift apart at exactly the
+  # tags anyone deploying by version would use. The manager's --agent-image
+  # default points at a versioned agent tag, so that gap is not cosmetic.
+  release-image-agent:
+    needs: [build-agent, release]
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci-retag.yml
+    with:
+      source: ${{ needs.build-agent.outputs.image }}
+      version: ${{ needs.release.outputs.tag_name }}
+      image: ghcr.io/jacaudi/wireguard-operator/agent
 
   # THE single required status check — point every ruleset at `ci` and nothing
   # else. A REGULAR job, never a called workflow: a job that CALLS a reusable
