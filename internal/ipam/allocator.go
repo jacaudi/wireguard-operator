@@ -22,8 +22,8 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
 	"github.com/korylprince/ipnetgen"
-	"github.com/nccloud/wireguard-operator/api/v1alpha1"
 )
 
 const (

@@ -1,4 +1,4 @@
-module github.com/nccloud/wireguard-operator
+module github.com/jacaudi/wireguard-operator
 
 go 1.26
 

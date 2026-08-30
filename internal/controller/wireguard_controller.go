@@ -27,10 +27,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nccloud/wireguard-operator/api/v1alpha1"
-	"github.com/nccloud/wireguard-operator/internal/agent"
-	"github.com/nccloud/wireguard-operator/internal/ipam"
-	"github.com/nccloud/wireguard-operator/internal/resources"
+	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
+	"github.com/jacaudi/wireguard-operator/internal/agent"
+	"github.com/jacaudi/wireguard-operator/internal/ipam"
+	"github.com/jacaudi/wireguard-operator/internal/resources"
 
 	wgtypes "golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	appsv1 "k8s.io/api/apps/v1"

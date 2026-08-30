@@ -11,9 +11,9 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/nccloud/wireguard-operator/api/v1alpha1"
-	"github.com/nccloud/wireguard-operator/internal/agent"
-	"github.com/nccloud/wireguard-operator/internal/ipam"
+	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
+	"github.com/jacaudi/wireguard-operator/internal/agent"
+	"github.com/jacaudi/wireguard-operator/internal/ipam"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/wgctrl"

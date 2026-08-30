@@ -3,7 +3,7 @@ package iptables
 import (
 	"testing"
 
-	"github.com/nccloud/wireguard-operator/api/v1alpha1"
+	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
 )
 
 // test helpers

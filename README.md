@@ -88,36 +88,24 @@ PersistentKeepalive = 25
 
 ## How to deploy
 
-> **Note:** this fork has not cut its own release yet, so the commands below install the
-> upstream `nccloud` operator, which is diverging from this fork. Features added here —
-> `spec.persistentKeepalive`, for example — will not exist in that build. Until a release
-> is published (tracked in [#36](https://github.com/jacaudi/wireguard-operator/issues/36)),
-> deploy from source with `make deploy`.
+> **Note:** this fork has not published an install artifact yet. An OCI Helm chart is the
+> planned install path, tracked in
+> [#48](https://github.com/jacaudi/wireguard-operator/issues/48). Until it ships, deploy
+> from source.
+>
+> Earlier revisions of this README pointed at upstream's release and chart. Those
+> install the diverging upstream operator, which does not carry this fork's features —
+> `spec.persistentKeepalive`, for example — so they have been removed rather than
+> repointed.
 
-### Using provided manifest file
 ```
-kubectl apply -f https://github.com/nccloud/wireguard-operator/releases/download/v2.11.0/release.yaml
-```
-
-### Using Helm
-```
-helm repo add nccloud https://nccloud.github.io/charts
-helm install wireguard nccloud/wireguard-operator -n wireguard-system
-```
-
-You can use values to further customize the installation:
-```
-helm install wireguard nccloud/wireguard-operator -n wireguard-system --set nameOverride=wireguard
+make deploy
 ```
 
 ## How to remove
-### Using provided manifest file
+
 ```
-kubectl delete -f https://github.com/nccloud/wireguard-operator/releases/download/v2.11.0/release.yaml
-```
-### Using Helm
-```
-helm uninstall wireguard -n wireguard-system
+make undeploy
 ```
 
 ## How to collaborate
