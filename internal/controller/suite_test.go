@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	vpnv1alpha1 "github.com/nccloud/wireguard-operator/api/v1alpha1"
+	vpnv1alpha1 "github.com/jacaudi/wireguard-operator/api/v1alpha1"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"

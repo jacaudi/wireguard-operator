@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/go-logr/stdr"
-	"github.com/nccloud/wireguard-operator/internal/agent"
-	"github.com/nccloud/wireguard-operator/internal/iptables"
-	"github.com/nccloud/wireguard-operator/internal/wireguard"
+	"github.com/jacaudi/wireguard-operator/internal/agent"
+	"github.com/jacaudi/wireguard-operator/internal/iptables"
+	"github.com/jacaudi/wireguard-operator/internal/wireguard"
 )
 
 func main() {

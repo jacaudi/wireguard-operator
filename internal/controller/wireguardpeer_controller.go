@@ -20,8 +20,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nccloud/wireguard-operator/api/v1alpha1"
-	"github.com/nccloud/wireguard-operator/internal/resources"
+	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
+	"github.com/jacaudi/wireguard-operator/internal/resources"
 
 	wgtypes "golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	corev1 "k8s.io/api/core/v1"
