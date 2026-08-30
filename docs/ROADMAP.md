@@ -485,4 +485,23 @@ client flow.
 
 ### 6.2 Fork housekeeping ([#36](https://github.com/jacaudi/wireguard-operator/issues/36))
 
-The Go module path is still `github.com/nccloud/wireguard-operator`.
+The Go module path still carried the upstream organisation; it is now
+`github.com/jacaudi/wireguard-operator`, matching where the repo actually lives.
+That covered `go.mod`, the import block of all 18 Go files, and the `repo:` and
+both `path:` fields in `PROJECT`. The dead upstream `.releaserc.json`
+(semantic-release, targeting a registry namespace two forks upstream) was
+deleted — release-please under `.github/` superseded it wholesale, and nothing
+invoked it. Image references were already retargeted to
+`ghcr.io/jacaudi/wireguard-operator/{manager,agent}` during the CI alignment.
+The README's install and Helm instructions pointed at upstream's release and
+chart; since this fork publishes neither, they were removed rather than
+repointed, and an OCI Helm chart is tracked separately in
+[#48](https://github.com/jacaudi/wireguard-operator/issues/48).
+
+**The API group stays `vpn.wireguard-operator.io`.** `PROJECT` carries
+`domain: wireguard-operator.io` with `group: vpn`, so renaming it would change
+the CRDs' fully-qualified names — a breaking change requiring every existing
+`Wireguard` and `WireguardPeer` object to be recreated, for no benefit beyond
+cosmetics. The module path and the API group are independent; renaming the
+former does not touch the latter. The decision is recorded here because #36
+requires it be explicit either way rather than left implicit.
