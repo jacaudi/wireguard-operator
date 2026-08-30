@@ -57,6 +57,34 @@ This is first release since forking from [devopsland/wireguard-operator](https:/
 
 * add liveness and readiness probe ([#205](https://github.com/jodevsa/wireguard-operator/issues/205)) ([3f57376](https://github.com/jodevsa/wireguard-operator/commit/3f573760194e52b5afe232e8efb9e08cee75329e))
 
+## [2.12.0](https://github.com/jacaudi/wireguard-operator/compare/v2.11.0...v2.12.0) (2026-08-30)
+
+
+### Features
+
+* add PersistentKeepalive to generated peer configs ([f3de393](https://github.com/jacaudi/wireguard-operator/commit/f3de393c6ab845025cb2b2e819dc97d69e306a06)), closes [#4](https://github.com/jacaudi/wireguard-operator/issues/4)
+
+
+### Bug Fixes
+
+* give the linter the history its ratchet needs, and say so ([b89f552](https://github.com/jacaudi/wireguard-operator/commit/b89f5526614fed6862bbcb04a92d3c37175e7040)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* keep the envtest suite running in the Makefile test targets ([7a638d7](https://github.com/jacaudi/wireguard-operator/commit/7a638d7e87aa9c2f622fc768bdacf8d5baa3da0e)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* make the hand-written YAML and Dockerfiles pass the new gates ([3b4b9ed](https://github.com/jacaudi/wireguard-operator/commit/3b4b9ed96d0827e399fb4a62c82254db5f0f8eeb)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* resolve every gosec finding the new lint baseline reports ([99d1cf4](https://github.com/jacaudi/wireguard-operator/commit/99d1cf4ea75a42b016aa48d7e515a36f73af2d0e)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* stop the Makefile reinstalling tools and eating uncommitted config ([25ba292](https://github.com/jacaudi/wireguard-operator/commit/25ba292844d54f1db085ee4dddd00f220c51a724))
+
+
+### Dependencies
+
+* bump the transitive dependencies carrying reachable vulnerabilities ([31f33e0](https://github.com/jacaudi/wireguard-operator/commit/31f33e0045851cdd5175e4417807e53d623feec5)), closes [#40](https://github.com/jacaudi/wireguard-operator/issues/40) [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+
+
+### Miscellaneous Chores
+
+* ignore the session handoff prompts directory ([a0414d7](https://github.com/jacaudi/wireguard-operator/commit/a0414d77700e3f0c265e04f613f4485f1e4623b8))
+* rename Go module path to github.com/jacaudi/wireguard-operator ([e380e0e](https://github.com/jacaudi/wireguard-operator/commit/e380e0ef6656535193f238ef095ac120a3060ba5)), closes [#36](https://github.com/jacaudi/wireguard-operator/issues/36)
+* rename Go module path to jacaudi and complete fork housekeeping ([be6d4e4](https://github.com/jacaudi/wireguard-operator/commit/be6d4e439816a51b31ebaccc3dcc979e142de23e))
+
 ## [2.6.2](https://github.com/jodevsa/wireguard-operator/compare/v2.6.1...v2.6.2) (2024-07-18)
 
 
