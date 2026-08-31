@@ -60,6 +60,10 @@ func reconcileServiceWithTypeNodePort(svcKey client.ObjectKey, nodePort string, 
 	}
 	return k8sClient.Update(context.Background(), svc)
 }
+// reconcileServiceWithTypeLoadBalancer asserts internally with a bare Expect, so it must NOT be
+// wrapped in Eventually -- on the first poll, before the operator has created the Service, that
+// Expect calls the Ginkgo fail handler and aborts the spec rather than returning an error to
+// retry. Callers must wait for the Service to exist first, then call this once.
 func reconcileServiceWithTypeLoadBalancer(svcKey client.ObjectKey, hostname string) error {
 	svc := &corev1.Service{}
 	Expect(k8sClient.Get(context.Background(), svcKey, svc)).Should(Succeed())
@@ -79,10 +83,15 @@ func reconcileServiceWithClusterIP(svcKey client.ObjectKey, port int32) error {
 		return fmt.Errorf("ReconcileServiceWithClusterIP only reconsiles ClusterIP services")
 	}
 
-	svc.Spec.Ports = []corev1.ServicePort{{
-		Port:       port,
-		TargetPort: intstr.FromInt32(port),
-	}}
+	// Mutate in place, preserving existing port names and protocols. Service ports are an
+	// associative list keyed on BOTH port and protocol, so replacing the slice with an entry
+	// that has no name and no protocol creates a second, unnamed port rather than replacing
+	// the operator's — and a multi-port Service requires every port to be named.
+	// Mirrors reconcileServiceWithTypeNodePort above.
+	if len(svc.Spec.Ports) > 0 {
+		svc.Spec.Ports[0].Port = port
+		svc.Spec.Ports[0].TargetPort = intstr.FromInt32(port)
+	}
 	return k8sClient.Update(context.Background(), svc)
 }
 
@@ -368,7 +377,7 @@ var _ = Describe("wireguard controller", func() {
 				return svc.Spec.Type
 			}, Timeout, Interval).Should(Equal(corev1.ServiceTypeNodePort))
 
-			Expect(reconcileServiceWithTypeNodePort(serviceKey, expectedNodePort, 5182)).Should(Succeed())
+			Expect(reconcileServiceWithTypeNodePort(serviceKey, expectedNodePort, 51820)).Should(Succeed())
 
 			// check that wireguard resource got the right summary fields after the service is ready
 			wg := &v1alpha1.Wireguard{}
@@ -835,7 +844,11 @@ var _ = Describe("wireguard controller", func() {
 				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
 					return err
 				}
-				svc.Spec.Ports = []corev1.ServicePort{{Port: 51820, TargetPort: intstr.FromInt(51820)}}
+				// Preserve port name and protocol; see reconcileServiceWithClusterIP.
+				if len(svc.Spec.Ports) > 0 {
+					svc.Spec.Ports[0].Port = 51820
+					svc.Spec.Ports[0].TargetPort = intstr.FromInt(51820)
+				}
 				return k8sClient.Update(context.Background(), svc)
 			}, Timeout, Interval).Should(Succeed())
 
