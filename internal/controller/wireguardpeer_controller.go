@@ -218,11 +218,11 @@ func (r *WireguardPeerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-// checkDuplicateAddress checks whether the peer's address or addressV6 is already
+// checkDuplicateAddress checks whether the peer's address is already
 // used by another peer on the same wireguardRef. Returns a non-empty message
 // describing the conflict, or "" if no duplicate is found.
 func (r *WireguardPeerReconciler) checkDuplicateAddress(ctx context.Context, namespace string, peer *v1alpha1.WireguardPeer) (string, error) {
-	if peer.Spec.Address == "" && peer.Spec.AddressV6 == "" {
+	if peer.Spec.Address == "" {
 		return "", nil
 	}
 
@@ -234,11 +234,8 @@ func (r *WireguardPeerReconciler) checkDuplicateAddress(ctx context.Context, nam
 		if other.Name == peer.Name || other.Spec.WireguardRef != peer.Spec.WireguardRef {
 			continue
 		}
-		if peer.Spec.Address != "" && other.Spec.Address == peer.Spec.Address {
+		if other.Spec.Address == peer.Spec.Address {
 			return fmt.Sprintf("Duplicate address %s: already used by peer %s", peer.Spec.Address, other.Name), nil
-		}
-		if peer.Spec.AddressV6 != "" && other.Spec.AddressV6 == peer.Spec.AddressV6 {
-			return fmt.Sprintf("Duplicate IPv6 address %s: already used by peer %s", peer.Spec.AddressV6, other.Name), nil
 		}
 	}
 	return "", nil

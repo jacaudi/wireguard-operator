@@ -72,21 +72,6 @@ func (a *Allocator) GetUsedIPs(cidr string, peers *v1alpha1.WireguardPeerList) [
 	return usedIPs
 }
 
-// GetUsedIPv6IPs returns a list of IPv6 addresses that are currently in use by peers.
-// It includes the derived network and gateway addresses (first host) from the
-// provided IPv6 CIDR as reserved.
-func (a *Allocator) GetUsedIPv6IPs(cidr string, peers *v1alpha1.WireguardPeerList) []string {
-	usedIPs := deriveReservedIPs(cidr)
-
-	for _, peer := range peers.Items {
-		if peer.Spec.AddressV6 != "" {
-			usedIPs = append(usedIPs, peer.Spec.AddressV6)
-		}
-	}
-
-	return usedIPs
-}
-
 // deriveReservedIPs returns a slice containing the network address and the first
 // host address derived from the given CIDR. If the CIDR cannot be parsed, it
 // returns an empty slice and leaves validation to callers of AllocateIP.

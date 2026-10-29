@@ -37,12 +37,8 @@ type WireguardPeerSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 	// The address of the peer.
 	Address string `json:"address,omitempty"`
-	// The IPv6 address of the peer.
-	AddressV6 string `json:"addressV6,omitempty"`
 	// The AllowedIPs of the peer.
 	AllowedIPs string `json:"allowedIPs,omitempty"`
-	// Set to true to temporarily disable the peer.
-	Disabled bool `json:"disabled,omitempty"`
 	// The DNS configuration for the peer.
 	Dns string `json:"dns,omitempty"`
 	// The DNS search domain(s) for the peer.
@@ -55,44 +51,6 @@ type WireguardPeerSpec struct {
 	//+kubebuilder:validation:Required
 	//+kubebuilder:validation:MinLength=1
 	WireguardRef string `json:"wireguardRef"`
-	// Egress network policies for the peer.
-	EgressNetworkPolicies EgressNetworkPolicies `json:"egressNetworkPolicies,omitempty"`
-	DownloadSpeed         Speed                 `json:"downloadSpeed,omitempty"`
-	UploadSpeed           Speed                 `json:"uploadSpeed,omitempty"`
-}
-
-type EgressNetworkPolicies []EgressNetworkPolicy
-
-// +kubebuilder:validation:Enum=ACCEPT;REJECT;Accept;Reject
-type EgressNetworkPolicyAction string
-
-// +kubebuilder:validation:Enum=TCP;UDP;ICMP
-type EgressNetworkPolicyProtocol string
-
-const (
-	EgressNetworkPolicyActionAccept EgressNetworkPolicyAction = "Accept"
-	EgressNetworkPolicyActionDeny   EgressNetworkPolicyAction = "Reject"
-)
-
-const (
-	EgressNetworkPolicyProtocolTCP EgressNetworkPolicyProtocol = "TCP"
-	EgressNetworkPolicyProtocolUDP EgressNetworkPolicyProtocol = "UDP"
-)
-
-type EgressNetworkPolicy struct {
-	// Specifies the action to take when outgoing traffic from a Wireguard peer matches the policy. This could be 'Accept' or 'Reject'.
-	Action EgressNetworkPolicyAction `json:"action,omitempty"`
-	// A struct that specifies the destination address and port for the traffic. This could include IP addresses or hostnames, as well as specific port numbers or port ranges.
-	To EgressNetworkPolicyTo `json:"to,omitempty"`
-	// Specifies the protocol to match for this policy. This could be TCP, UDP, or ICMP.
-	Protocol EgressNetworkPolicyProtocol `json:"protocol,omitempty"`
-}
-
-type EgressNetworkPolicyTo struct {
-	// A string field that specifies the destination IP address for traffic that matches the policy.
-	Ip string `json:"ip,omitempty"`
-	// An integer field that specifies the destination port number for traffic that matches the policy.
-	Port int32 `json:"port,omitempty" protobuf:"varint,3,opt,name=port"`
 }
 
 // WireguardPeerStatus defines the observed state of WireguardPeer
@@ -110,13 +68,6 @@ type WireguardPeerStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
-}
-
-type Speed struct {
-	Value int `json:"config,omitempty"`
-
-	// +kubebuilder:validation:Enum=mbps;kbps
-	Unit string `json:"unit,omitempty"`
 }
 
 //+kubebuilder:object:root=true

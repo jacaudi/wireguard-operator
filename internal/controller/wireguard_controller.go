@@ -176,24 +176,11 @@ func getAvaialbleIp(cidr string, usedIps []string) (string, error) {
 }
 
 // effectivePeerCIDR4 returns the effective IPv4 peer CIDR for a Wireguard instance.
-// If IPv6Only is true and an IPv6 CIDR is configured, IPv4 CIDR is disabled (empty).
 func effectivePeerCIDR4(wg *v1alpha1.Wireguard) string {
-	if wg.Spec.IPv6Only && wg.Spec.PeerCIDRv6 != "" {
-		return ""
-	}
 	if wg.Spec.PeerCIDR != "" {
 		return wg.Spec.PeerCIDR
 	}
 	return ipam.DefaultPeerCIDR4
-}
-
-// effectivePeerCIDR6 returns the configured IPv6 peer CIDR and a boolean indicating
-// whether IPv6 is enabled for this Wireguard instance.
-func effectivePeerCIDR6(wg *v1alpha1.Wireguard) (string, bool) {
-	if wg.Spec.PeerCIDRv6 == "" {
-		return "", false
-	}
-	return wg.Spec.PeerCIDRv6, true
 }
 
 // persistentKeepalive returns the keepalive interval to write into peer configs.
@@ -220,20 +207,8 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 		return err
 	}
 
-	// Prepare used IP lists for IPv4 and IPv6 based on the effective CIDRs.
-	var usedIps4 []string
-	var usedIps6 []string
-
 	cidr4 := effectivePeerCIDR4(wireguard)
-	if cidr4 != "" {
-		usedIps4 = r.ipAllocator.GetUsedIPs(cidr4, peers)
-	}
-
-	cidr6, v6Enabled := effectivePeerCIDR6(wireguard)
-	if v6Enabled {
-		usedIps6 = r.ipAllocator.GetUsedIPv6IPs(cidr6, peers)
-	}
-	ipv6Only := wireguard.Spec.IPv6Only && v6Enabled
+	usedIps4 := r.ipAllocator.GetUsedIPs(cidr4, peers)
 
 	// Ensure or create the aggregated peer configs Secret
 	peerCfgSecretName := wireguard.Name + "-peer-configs"
@@ -264,8 +239,7 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 	newPeerCfgData := map[string][]byte{}
 
 	for _, peer := range peers.Items {
-		// Allocate IPv4 address if enabled and not in IPv6-only mode.
-		if cidr4 != "" && !wireguard.Spec.IPv6Only && peer.Spec.Address == "" {
+		if peer.Spec.Address == "" {
 			ip, err := getAvaialbleIp(cidr4, usedIps4)
 			if err != nil {
 				return err
@@ -277,18 +251,6 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 			usedIps4 = append(usedIps4, ip)
 		}
 
-		// Allocate IPv6 address if enabled.
-		if v6Enabled && peer.Spec.AddressV6 == "" {
-			ip6, err := getAvaialbleIp(cidr6, usedIps6)
-			if err != nil {
-				return err
-			}
-			peer.Spec.AddressV6 = ip6
-			if err := r.Update(ctx, &peer); err != nil {
-				return err
-			}
-			usedIps6 = append(usedIps6, ip6)
-		}
 		dnsConfiguration := dns
 
 		if dnsSearchDomain != "" {
@@ -298,19 +260,7 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 		allowIps := peer.Spec.AllowedIPs
 
 		if allowIps == "" {
-			hasIPv4 := peer.Spec.Address != ""
-			hasIPv6 := peer.Spec.AddressV6 != ""
-
-			switch {
-			case ipv6Only && hasIPv6:
-				allowIps = "::/0"
-			case v6Enabled && hasIPv4 && hasIPv6:
-				allowIps = "0.0.0.0/0, ::/0"
-			case v6Enabled && !hasIPv4 && hasIPv6:
-				allowIps = "::/0"
-			default:
-				allowIps = "0.0.0.0/0"
-			}
+			allowIps = "0.0.0.0/0"
 		}
 
 		// Do not store shell-wrapped config in status anymore per upstream PR 212
@@ -323,9 +273,6 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 				addresses := []string{}
 				if peer.Spec.Address != "" {
 					addresses = append(addresses, peer.Spec.Address)
-				}
-				if peer.Spec.AddressV6 != "" {
-					addresses = append(addresses, peer.Spec.AddressV6)
 				}
 				addressLine := strings.Join(addresses, ", ")
 
