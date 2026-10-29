@@ -54,24 +54,3 @@ func (b *SecretBuilder) ForWireguard(wg *v1alpha1.Wireguard, state []byte, priva
 
 	return secret, nil
 }
-
-// ForPeer creates a secret for a WireguardPeer containing keys.
-func (b *SecretBuilder) ForPeer(peer *v1alpha1.WireguardPeer, privateKey, publicKey string) (*corev1.Secret, error) {
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      peer.Name + "-peer",
-			Namespace: peer.Namespace,
-			Labels:    LabelsForWireguard(peer.Name),
-		},
-		Data: map[string][]byte{
-			"privateKey": []byte(privateKey),
-			"publicKey":  []byte(publicKey),
-		},
-	}
-
-	if err := SetOwnerReference(peer, secret, b.scheme); err != nil {
-		return nil, err
-	}
-
-	return secret, nil
-}

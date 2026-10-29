@@ -16,7 +16,6 @@ kind: Wireguard
 metadata:
   name: vpn
 spec:
-  mtu: "1380"
   serviceType: "NodePort"`
 
 		// kubectl apply -f
@@ -31,6 +30,7 @@ metadata:
   name: peer20
 spec:
   wireguardRef: "vpn"
+  publicKey: "PLA+byaz6a5jbnioieB4NEELG7sdq7Wk+3u9Kw0s6zk="
 
 `
 		// kubectl apply -f

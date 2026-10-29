@@ -17,13 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-type PrivateKey struct {
-	SecretKeyRef corev1.SecretKeySelector `json:"secretKeyRef"`
-}
 
 type Status struct {
 }
@@ -37,14 +32,6 @@ type WireguardPeerSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 	// The address of the peer.
 	Address string `json:"address,omitempty"`
-	// The AllowedIPs of the peer.
-	AllowedIPs string `json:"allowedIPs,omitempty"`
-	// The DNS configuration for the peer.
-	Dns string `json:"dns,omitempty"`
-	// The DNS search domain(s) for the peer.
-	DnsSearchDomain string `json:"dnsSearchDomain,omitempty"`
-	// The private key of the peer
-	PrivateKey PrivateKey `json:"privateKeyRef,omitempty"`
 	// The key used by the peer to authenticate with the wg server.
 	PublicKey string `json:"publicKey,omitempty"`
 	// The name of the Wireguard instance in k8s that the peer belongs to. The wg instance should be in the same namespace as the peer.

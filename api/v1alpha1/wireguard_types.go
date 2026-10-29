@@ -30,8 +30,6 @@ const (
 
 // WireguardSpec defines the desired state of Wireguard
 type WireguardSpec struct {
-	// A string field that specifies the maximum transmission unit (MTU) size for Wireguard packets for all peers.
-	Mtu string `json:"mtu,omitempty"`
 	// A string field that specifies the address for the Wireguard Service.
 	// When ServiceType is LoadBalancer, this can be used to request a fixed Service IP.
 	// If ExternalAddress is not set, this value is also used as the peer endpoint.
@@ -42,10 +40,6 @@ type WireguardSpec struct {
 	// PeerCIDR is the IPv4 CIDR range from which Wireguard peer addresses will be allocated.
 	// If omitted, the operator will default to 10.8.0.0/24.
 	PeerCIDR string `json:"peerCIDR,omitempty"`
-	// A string field that specifies the DNS server(s) to be used by the peers.
-	Dns string `json:"dns,omitempty"`
-	// A string field that specifies the DNS search domain(s) to be used by the peers.
-	DnsSearchDomain string `json:"dnsSearchDomain,omitempty"`
 	// A field that specifies the type of Kubernetes service that should be used for the Wireguard VPN. This could be ClusterIP, NodePort or LoadBalancer, depending on the needs of the deployment.
 	ServiceType corev1.ServiceType `json:"serviceType,omitempty"`
 	// A field that specifies the value to use for a nodePort ServiceType
@@ -55,18 +49,8 @@ type WireguardSpec struct {
 	// A boolean field that specifies whether IP forwarding should be enabled on the Wireguard VPN pod at startup. This can be useful to enable if the peers are having problems with sending traffic to the internet.
 	EnableIpForwardOnPodInit bool `json:"enableIpForwardOnPodInit,omitempty"`
 	// A boolean field that specifies whether to use the userspace implementation of Wireguard instead of the kernel one.
-	UseWgUserspaceImplementation bool `json:"useWgUserspaceImplementation,omitempty"`
-	// PersistentKeepalive is the interval in seconds at which peers send keepalive packets
-	// to the server. This keeps NAT and conntrack entries alive so the server can reach the
-	// peer, and makes the peer re-handshake promptly after the server pod is rescheduled.
-	// Set to 0 to disable. Defaults to 25.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=65535
-	// +kubebuilder:default=25
-	// +optional
-	PersistentKeepalive *int32 `json:"persistentKeepalive,omitempty"`
-
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	UseWgUserspaceImplementation bool              `json:"useWgUserspaceImplementation,omitempty"`
+	NodeSelector                 map[string]string `json:"nodeSelector,omitempty"`
 	// A list of Kubernetes taint tolerations applied to the Wireguard pod.
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 	Agent       WireguardPodSpec    `json:"agent,omitempty"`
@@ -81,7 +65,6 @@ type WireguardPodSpec struct {
 type WireguardStatus struct {
 	// A string field that specifies the address for the Wireguard VPN server that is currently being used.
 	Address string `json:"address,omitempty"`
-	Dns     string `json:"dns,omitempty"`
 	// A string field that specifies the port for the Wireguard VPN server that is currently being used.
 	Port string `json:"port,omitempty"`
 	// A string field that represents the current status of Wireguard. This could include values like ready, pending, or error.

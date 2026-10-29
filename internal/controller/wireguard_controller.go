@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
@@ -41,13 +40,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
-)
-
-const (
-	// defaultPersistentKeepalive is the fallback keepalive interval, in seconds, used when
-	// Wireguard.Spec.PersistentKeepalive is nil. The value users actually receive comes from
-	// the CRD default; this only covers objects stored before the field existed.
-	defaultPersistentKeepalive = 25
 )
 
 // Standard condition types for Wireguard
@@ -183,25 +175,10 @@ func effectivePeerCIDR4(wg *v1alpha1.Wireguard) string {
 	return ipam.DefaultPeerCIDR4
 }
 
-// persistentKeepalive returns the keepalive interval to write into peer configs.
-// A nil value means the field was absent — either the object predates the field or
-// defaulting is disabled — so fall back to the default rather than to zero, which
-// WireGuard interprets as "disabled".
-func persistentKeepalive(wg *v1alpha1.Wireguard) int32 {
-	if wg.Spec.PersistentKeepalive == nil {
-		return defaultPersistentKeepalive
-	}
-	return *wg.Spec.PersistentKeepalive
-}
-
-func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl.Request, wireguard *v1alpha1.Wireguard, serverAddress string, dns string, dnsSearchDomain string, serverPublicKey string, serverMtu string) error {
-	// Rendered once and interpolated into every config flavor below. Empty when the
-	// interval is 0, so the line is omitted rather than written as an explicit zero.
-	keepaliveLine := ""
-	if ka := persistentKeepalive(wireguard); ka > 0 {
-		keepaliveLine = fmt.Sprintf("PersistentKeepalive = %d\n", ka)
-	}
-
+// updateWireguardPeers allocates an address to every peer of this Wireguard that has a
+// publicKey but no address, and marks each such peer Ready. A peer without a publicKey gets no
+// address: it is marked Ready=False with reason PublicKeyMissing.
+func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl.Request, wireguard *v1alpha1.Wireguard) error {
 	peers, err := r.getWireguardPeers(ctx, req)
 	if err != nil {
 		return err
@@ -210,35 +187,17 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 	cidr4 := effectivePeerCIDR4(wireguard)
 	usedIps4 := r.ipAllocator.GetUsedIPs(cidr4, peers)
 
-	// Ensure or create the aggregated peer configs Secret
-	peerCfgSecretName := wireguard.Name + "-peer-configs"
-	peerCfgSecret := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: peerCfgSecretName, Namespace: wireguard.Namespace}, peerCfgSecret); err != nil {
-		if errors.IsNotFound(err) {
-			peerCfgSecret = &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      peerCfgSecretName,
-					Namespace: wireguard.Namespace,
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: wireguard.APIVersion,
-							Kind:       wireguard.Kind,
-							Name:       wireguard.Name,
-							UID:        wireguard.UID,
-						},
-					},
-				},
-				Type: corev1.SecretTypeOpaque,
-				Data: map[string][]byte{},
-			}
-		} else {
-			return err
-		}
-	}
-	// Always rebuild data from scratch to prune removed peers
-	newPeerCfgData := map[string][]byte{}
-
 	for _, peer := range peers.Items {
+		if peer.Spec.PublicKey == "" {
+			if err := r.markPeerPublicKeyMissing(ctx, &peer); err != nil {
+				if errors.IsConflict(err) {
+					return nil
+				}
+				return err
+			}
+			continue
+		}
+
 		if peer.Spec.Address == "" {
 			ip, err := getAvaialbleIp(cidr4, usedIps4)
 			if err != nil {
@@ -251,52 +210,11 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 			usedIps4 = append(usedIps4, ip)
 		}
 
-		dnsConfiguration := dns
-
-		if dnsSearchDomain != "" {
-			dnsConfiguration = dns + ", " + dnsSearchDomain
-		}
-
-		allowIps := peer.Spec.AllowedIPs
-
-		if allowIps == "" {
-			allowIps = "0.0.0.0/0"
-		}
-
-		// Do not store shell-wrapped config in status anymore per upstream PR 212
-
-		// Build pure peer config and write to aggregated Secret <wireguard-name>-peer-configs
-		// Fetch peer private key for inclusion
-		peerPrivSecret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{Name: peer.Spec.PrivateKey.SecretKeyRef.Name, Namespace: peer.Namespace}, peerPrivSecret); err == nil {
-			if v, ok := peerPrivSecret.Data[peer.Spec.PrivateKey.SecretKeyRef.Key]; ok {
-				addresses := []string{}
-				if peer.Spec.Address != "" {
-					addresses = append(addresses, peer.Spec.Address)
-				}
-				addressLine := strings.Join(addresses, ", ")
-
-				pureCfg := fmt.Sprintf(`[Interface]
-PrivateKey = %s
-Address = %s
-DNS = %s`, strings.TrimSpace(string(v)), addressLine, dnsConfiguration)
-				if serverMtu != "" {
-					pureCfg = pureCfg + "\nMTU = " + serverMtu
-				}
-				pureCfg += fmt.Sprintf(`
-
-[Peer]
-PublicKey = %s
-AllowedIPs = %s
-Endpoint = %s:%s
-%s`, serverPublicKey, allowIps, serverAddress, wireguard.Status.Port, keepaliveLine)
-				newPeerCfgData[peer.Name] = []byte(pureCfg)
-			}
-		}
-		if peer.Status.Status != v1alpha1.Ready {
-			// Config removed from status; configs are stored in Secret <wg-name>-peer-configs
+		// A peer that was keyless still carries Ready=False/PublicKeyMissing; clear it.
+		if peer.Status.Status != v1alpha1.Ready || meta.FindStatusCondition(peer.Status.Conditions, ConditionReady) != nil {
 			peer.Status.Status = v1alpha1.Ready
 			peer.Status.Message = "Peer configured"
+			meta.RemoveStatusCondition(&peer.Status.Conditions, ConditionReady)
 			if err := r.Status().Update(ctx, &peer); err != nil {
 				if errors.IsConflict(err) {
 					return nil
@@ -306,27 +224,27 @@ Endpoint = %s:%s
 		}
 	}
 
-	// Assign rebuilt data map so removed peers are pruned
-	peerCfgSecret.Data = newPeerCfgData
-
-	// Create or update the aggregated peer configs Secret
-	existing := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: peerCfgSecret.Name, Namespace: peerCfgSecret.Namespace}, existing); err != nil {
-		if errors.IsNotFound(err) {
-			if err := r.Create(ctx, peerCfgSecret); err != nil {
-				return err
-			}
-		} else {
-			return err
-		}
-	} else {
-		existing.Data = peerCfgSecret.Data
-		if err := r.Update(ctx, existing); err != nil {
-			return err
-		}
-	}
-
 	return nil
+}
+
+// markPeerPublicKeyMissing records that peer cannot be admitted by the server until it carries a
+// publicKey. It writes only when the recorded status differs, so repeated reconciles are no-ops.
+func (r *WireguardReconciler) markPeerPublicKeyMissing(ctx context.Context, peer *v1alpha1.WireguardPeer) error {
+	const reason = "PublicKeyMissing"
+	if c := meta.FindStatusCondition(peer.Status.Conditions, ConditionReady); c != nil && c.Reason == reason &&
+		c.Status == metav1.ConditionFalse && peer.Status.Status == v1alpha1.Pending {
+		return nil
+	}
+	peer.Status.Status = v1alpha1.Pending
+	peer.Status.Message = "Waiting for spec.publicKey"
+	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
+		Type:               ConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            "spec.publicKey is empty, so the server cannot admit this peer",
+		ObservedGeneration: peer.Generation,
+	})
+	return r.Status().Update(ctx, peer)
 }
 
 //+kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguards,verbs=get;list;watch;create;update;patch;delete
@@ -418,31 +336,6 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.Info("Service annotations set without address; the LB controller must assign an IP", "wireguard", wireguard.Name, "namespace", wireguard.Namespace)
 	}
 
-	dnsAddress := "1.1.1.1"
-	dnsSearchDomain := ""
-
-	if wireguard.Spec.Dns != "" {
-		dnsAddress = wireguard.Spec.Dns
-	} else {
-		kubeDnsService := &corev1.Service{}
-		err = r.Get(ctx, types.NamespacedName{Name: "kube-dns", Namespace: "kube-system"}, kubeDnsService)
-		if err == nil {
-			dnsAddress = kubeDnsService.Spec.ClusterIP
-			dnsSearchDomain = fmt.Sprintf("%s.svc.cluster.local", wireguard.Namespace)
-		} else {
-			if errors.IsNotFound(err) {
-				log.Info("kube-dns service not found; defaulting DNS to public resolver", "dns", dnsAddress)
-			} else {
-				log.Error(err, "Unable to get kube-dns service; defaulting DNS to public resolver", "dns", dnsAddress)
-			}
-		}
-	}
-
-	// Allow overriding DNS search domain via spec
-	if wireguard.Spec.DnsSearchDomain != "" {
-		dnsSearchDomain = wireguard.Spec.DnsSearchDomain
-	}
-
 	// service
 	//
 	// Every field the builder renders converges: annotations, target ports, protocols and the
@@ -526,17 +419,16 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	if wireguard.Status.Address != address || port != wireguard.Status.Port || dnsAddress != wireguard.Status.Dns {
+	if wireguard.Status.Address != address || port != wireguard.Status.Port {
 		latest := &v1alpha1.Wireguard{}
 		if err := r.Get(ctx, req.NamespacedName, latest); err == nil {
 			latest.Status.Address = address
 			latest.Status.Port = port
-			latest.Status.Dns = dnsAddress
 			if err := r.Status().Update(ctx, latest); err != nil {
 				if errors.IsNotFound(err) || errors.IsConflict(err) {
 					// ignore and let reconcile retry
 				} else {
-					log.Error(err, "Failed to update wireguard manifest address, port, and dns")
+					log.Error(err, "Failed to update wireguard manifest address and port")
 					return ctrl.Result{}, err
 				}
 			}
@@ -770,7 +662,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	if err := r.updateWireguardPeers(ctx, req, wireguard, address, dnsAddress, dnsSearchDomain, string(secret.Data["publicKey"]), wireguard.Spec.Mtu); err != nil {
+	if err := r.updateWireguardPeers(ctx, req, wireguard); err != nil {
 		return ctrl.Result{}, err
 	}
 
