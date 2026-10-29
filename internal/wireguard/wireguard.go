@@ -133,6 +133,25 @@ func createLinkUsingUserspaceImpl(iface string, wgUserspaceImplementationFallbac
 	return nil
 }
 
+// userspaceLinkTimeout bounds how long SyncLink waits for the userspace implementation to
+// create the link it was started for.
+const userspaceLinkTimeout = 5 * time.Second
+
+// waitForLink polls until iface exists or timeout elapses.
+func waitForLink(iface string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		_, err := netlink.LinkByName(iface)
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("userspace WireGuard did not create link %q within %s: %w; ensure a userspace implementation (e.g., wireguard-go) is running for this interface", iface, timeout, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func createLinkUsingKernalModule(iface string) error {
 	// link not created
 	wgLink := &netlink.GenericLink{
@@ -149,7 +168,9 @@ func createLinkUsingKernalModule(iface string) error {
 	return nil
 }
 
-func SyncLink(_ agent.State, iface string, wgUserspaceImplementationFallback string, wgUseUserspaceImpl bool) error {
+// SyncLink creates the WireGuard link iface if it does not exist, using the kernel module
+// and falling back to the userspace implementation when the module is unavailable.
+func SyncLink(_ agent.State, iface string, wgUserspaceImplementationFallback string) error {
 	_, err := netlink.LinkByName(iface)
 	if err != nil {
 		if _, ok := err.(netlink.LinkNotFoundError); !ok {
@@ -158,43 +179,18 @@ func SyncLink(_ agent.State, iface string, wgUserspaceImplementationFallback str
 	}
 
 	if _, ok := err.(netlink.LinkNotFoundError); ok {
-		if wgUseUserspaceImpl {
+		err = createLinkUsingKernalModule(iface)
+
+		if err != nil {
 			err = createLinkUsingUserspaceImpl(iface, wgUserspaceImplementationFallback)
 
 			if err != nil {
 				return err
 			}
 
-			// Wait briefly for userspace implementation to create the link
-			var lastErr error
-			deadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) {
-				var l netlink.Link
-				l, lastErr = netlink.LinkByName(iface)
-				if lastErr == nil {
-					// Ensure link is up
-					if err := netlink.LinkSetUp(l); err != nil {
-						return fmt.Errorf("bringing link %q up failed: %w", iface, err)
-					}
-					lastErr = nil
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-
-			if lastErr != nil {
-				return fmt.Errorf("userspace WireGuard did not create link %q in time: %w; ensure a userspace implementation (e.g., wireguard-go) is running for this interface", iface, lastErr)
-			}
-
-		} else {
-			err = createLinkUsingKernalModule(iface)
-
-			if err != nil {
-				err = createLinkUsingUserspaceImpl(iface, wgUserspaceImplementationFallback)
-
-				if err != nil {
-					return err
-				}
+			// The userspace implementation creates the link asynchronously.
+			if err := waitForLink(iface, userspaceLinkTimeout); err != nil {
+				return err
 			}
 		}
 
@@ -241,13 +237,12 @@ type Wireguard struct {
 	Iface                             string
 	ListenPort                        int
 	WgUserspaceImplementationFallback string
-	WgUseUserspaceImpl                bool
 }
 
 func (wg *Wireguard) Sync(state agent.State) error {
 	wg.Logger.V(2).Info("syncing Wireguard")
 	// create wg0 link
-	err := SyncLink(state, wg.Iface, wg.WgUserspaceImplementationFallback, wg.WgUseUserspaceImpl)
+	err := SyncLink(state, wg.Iface, wg.WgUserspaceImplementationFallback)
 	if err != nil {
 		return err
 	}

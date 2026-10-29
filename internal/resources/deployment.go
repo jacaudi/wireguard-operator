@@ -98,27 +98,13 @@ func (b *DeploymentBuilder) ForWireguard(wg *v1alpha1.Wireguard) (*appsv1.Deploy
 							},
 						},
 					},
-					InitContainers: []corev1.Container{},
+					InitContainers: []corev1.Container{b.ipForwardInitContainer()},
 					Containers: []corev1.Container{
 						b.agentContainer(wg, readOnlyRootFilesystem, allowPrivilegeEscalation),
 					},
 				},
 			},
 		},
-	}
-
-	// Add IP forwarding init container if requested
-	if wg.Spec.EnableIpForwardOnPodInit {
-		dep.Spec.Template.Spec.InitContainers = append(dep.Spec.Template.Spec.InitContainers, b.ipForwardInitContainer())
-	}
-
-	// Add userspace implementation flag if requested
-	if wg.Spec.UseWgUserspaceImplementation {
-		for i, c := range dep.Spec.Template.Spec.Containers {
-			if c.Name == "agent" {
-				dep.Spec.Template.Spec.Containers[i].Command = append(dep.Spec.Template.Spec.Containers[i].Command, "--wg-use-userspace-implementation")
-			}
-		}
 	}
 
 	if err := SetOwnerReference(wg, dep, b.scheme); err != nil {
@@ -157,13 +143,6 @@ func (b *DeploymentBuilder) agentContainer(wg *v1alpha1.Wireguard, readOnlyRootF
 				ContainerPort: HTTPPort,
 				Name:          "http",
 				Protocol:      corev1.ProtocolTCP,
-			},
-		},
-		EnvFrom: []corev1.EnvFromSource{
-			{
-				ConfigMapRef: &corev1.ConfigMapEnvSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: wg.Name + "-config"},
-				},
 			},
 		},
 		ReadinessProbe: &corev1.Probe{

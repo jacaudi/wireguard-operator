@@ -32,12 +32,8 @@ const (
 type WireguardSpec struct {
 	// PeerCIDR is the IPv4 CIDR range from which Wireguard peer addresses will be allocated.
 	// If omitted, the operator will default to 10.8.0.0/24.
-	PeerCIDR string `json:"peerCIDR,omitempty"`
-	// A boolean field that specifies whether IP forwarding should be enabled on the Wireguard VPN pod at startup. This can be useful to enable if the peers are having problems with sending traffic to the internet.
-	EnableIpForwardOnPodInit bool `json:"enableIpForwardOnPodInit,omitempty"`
-	// A boolean field that specifies whether to use the userspace implementation of Wireguard instead of the kernel one.
-	UseWgUserspaceImplementation bool              `json:"useWgUserspaceImplementation,omitempty"`
-	NodeSelector                 map[string]string `json:"nodeSelector,omitempty"`
+	PeerCIDR     string            `json:"peerCIDR,omitempty"`
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 	// A list of Kubernetes taint tolerations applied to the Wireguard pod.
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 	Agent       WireguardPodSpec    `json:"agent,omitempty"`

@@ -105,12 +105,6 @@ spec:
                         type: object
                     type: object
                 type: object
-              enableIpForwardOnPodInit:
-                description: A boolean field that specifies whether IP forwarding
-                  should be enabled on the Wireguard VPN pod at startup. This can
-                  be useful to enable if the peers are having problems with sending
-                  traffic to the internet.
-                type: boolean
               nodeSelector:
                 additionalProperties:
                   type: string
@@ -160,10 +154,6 @@ spec:
                       type: string
                   type: object
                 type: array
-              useWgUserspaceImplementation:
-                description: A boolean field that specifies whether to use the userspace
-                  implementation of Wireguard instead of the kernel one.
-                type: boolean
             type: object
           status:
             description: WireguardStatus defines the observed state of Wireguard

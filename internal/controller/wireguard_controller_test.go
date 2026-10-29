@@ -4,7 +4,6 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"time"
 
@@ -581,69 +580,6 @@ var _ = Describe("wireguard controller", func() {
 				ContainSubstring(peer1Key.Name),
 			))
 		})
-
-		for _, useWgUserspace := range []bool{true, false} {
-			testTextPrefix := "uses"
-			if !useWgUserspace {
-				testTextPrefix = "does not use"
-			}
-
-			It(fmt.Sprintf("%s userspace implementation of wireguard if spec.useWgUserspaceImplementation is set to %t", testTextPrefix, useWgUserspace), func() {
-
-				wgServer := &v1alpha1.Wireguard{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      wgKey.Name,
-						Namespace: wgKey.Namespace,
-					},
-					Spec: v1alpha1.WireguardSpec{
-						UseWgUserspaceImplementation: useWgUserspace,
-					},
-				}
-				Expect(k8sClient.Create(context.Background(), wgServer)).Should(Succeed())
-
-				serviceKey := types.NamespacedName{
-					Namespace: wgKey.Namespace,
-					Name:      wgKey.Name + "-svc",
-				}
-				Eventually(func() error {
-					svc := &corev1.Service{}
-					return k8sClient.Get(context.Background(), serviceKey, svc)
-				}, Timeout, Interval).Should(Succeed())
-
-				// new
-				depName := wgKey.Name + "-dep"
-				depKey := types.NamespacedName{
-					Namespace: wgKey.Namespace,
-					Name:      depName,
-				}
-
-				expectedCmdFlag := "--wg-use-userspace-implementation"
-				matcher := ContainElements(expectedCmdFlag)
-				if !useWgUserspace {
-					matcher = Not(matcher)
-				} else {
-					// Accept either explicit userspace flag or the fallback flag
-					matcher = SatisfyAny(
-						ContainElements(expectedCmdFlag),
-						ContainElements("--wg-userspace-implementation-fallback"),
-					)
-				}
-
-				Eventually(func() []string {
-					dep := &appsv1.Deployment{}
-					err := k8sClient.Get(context.Background(), depKey, dep)
-					if err != nil {
-						return []string{}
-					}
-					for _, c := range dep.Spec.Template.Spec.Containers {
-						if c.Name == "agent" {
-							return c.Command
-						}
-					}
-					return []string{}
-				}, Timeout, Interval).Should(matcher)
-			})
-		}
 
 		It("reverts a Deployment field changed outside the operator", func() {
 			created := &v1alpha1.Wireguard{
