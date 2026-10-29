@@ -41,6 +41,7 @@ import (
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var k8sClient client.Client
+var writeCounter *countingClient
 var testEnv *envtest.Environment
 var wgTestImage = "test-image"
 
@@ -84,8 +85,10 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
+	writeCounter = newCountingClient(k8sManager.GetClient())
+
 	err = (&WireguardReconciler{
-		Client:               k8sManager.GetClient(),
+		Client:               writeCounter,
 		Scheme:               k8sManager.GetScheme(),
 		AgentImagePullPolicy: "IfNotPresent",
 		AgentImage:           wgTestImage,
