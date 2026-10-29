@@ -133,12 +133,6 @@ spec:
                   A string field that specifies the external address where peers should connect to this Wireguard instance.
                   When set, this is used for peer endpoints instead of Address or Service status.
                 type: string
-              ipv6Only:
-                description: |-
-                  IPv6Only indicates that only IPv6 connectivity should be configured for peers.
-                  When true and PeerCIDRv6 is set, the operator will not allocate new IPv4 peer addresses
-                  or configure IPv4 routing/NAT for this instance.
-                type: boolean
               mtu:
                 description: A string field that specifies the maximum transmission
                   unit (MTU) size for Wireguard packets for all peers.
@@ -150,12 +144,7 @@ spec:
               peerCIDR:
                 description: |-
                   PeerCIDR is the IPv4 CIDR range from which Wireguard peer addresses will be allocated.
-                  If omitted (and IPv6Only is false), the operator will default to 10.8.0.0/24.
-                type: string
-              peerCIDRv6:
-                description: |-
-                  PeerCIDRv6 is the IPv6 CIDR range from which Wireguard peer IPv6 addresses will be allocated.
-                  When set, IPv6 support is enabled for this Wireguard instance.
+                  If omitted, the operator will default to 10.8.0.0/24.
                 type: string
               persistentKeepalive:
                 default: 25
