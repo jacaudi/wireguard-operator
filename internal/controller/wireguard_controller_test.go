@@ -5,11 +5,13 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
+	"github.com/jacaudi/wireguard-operator/internal/resources"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -1590,6 +1592,285 @@ var _ = Describe("wireguard controller", func() {
 				}, Timeout, Interval).Should(matcher)
 			})
 		}
+
+		It("reverts a Deployment field changed outside the operator", func() {
+			created := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			}
+			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
+
+			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
+			// See reconcileServiceWithTypeLoadBalancer: wait for the Service, then call it once.
+			Eventually(func() error {
+				return k8sClient.Get(context.Background(), serviceKey, &corev1.Service{})
+			}, Timeout, Interval).Should(Succeed())
+			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, "localhost")).Should(Succeed())
+
+			deploymentKey := types.NamespacedName{Name: wgName + "-dep", Namespace: wgNamespace}
+			Eventually(func() error {
+				return k8sClient.Get(context.Background(), deploymentKey, &appsv1.Deployment{})
+			}, Timeout, Interval).Should(Succeed())
+
+			Eventually(func() error {
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
+					return err
+				}
+				dep.Spec.Template.Spec.Containers[0].Image = "registry.invalid/tampered:latest"
+				return k8sClient.Update(context.Background(), dep, client.FieldOwner("kubectl-edit"))
+			}, Timeout, Interval).Should(Succeed())
+
+			Eventually(func() string {
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
+					return "get-failed"
+				}
+				for _, c := range dep.Spec.Template.Spec.Containers {
+					if c.Name == "agent" {
+						return c.Image
+					}
+				}
+				return "no-agent"
+			}, Timeout, Interval).Should(Equal(wgTestImage))
+		})
+
+		It("preserves the apiserver's clusterIP and nodePort allocations across reconciles", func() {
+			created := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			}
+			created.Spec.ServiceType = corev1.ServiceTypeNodePort
+			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
+
+			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
+			Eventually(func() bool {
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
+					return false
+				}
+				return len(svc.Spec.Ports) > 0 && svc.Spec.Ports[0].NodePort != 0 && svc.Spec.ClusterIP != ""
+			}, Timeout, Interval).Should(BeTrue(), "apiserver should have allocated clusterIP and nodePort")
+
+			first := &corev1.Service{}
+			Expect(k8sClient.Get(context.Background(), serviceKey, first)).Should(Succeed())
+
+			// Nudge the reconciler; the allocations must not move.
+			for i := range 3 {
+				Eventually(func() error {
+					wg := &v1alpha1.Wireguard{}
+					if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+						return err
+					}
+					if wg.Annotations == nil {
+						wg.Annotations = map[string]string{}
+					}
+					wg.Annotations["probe.test/nudge"] = string(rune('a' + i))
+					return k8sClient.Update(context.Background(), wg)
+				}, Timeout, Interval).Should(Succeed())
+			}
+
+			Consistently(func() bool {
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
+					return false
+				}
+				return svc.Spec.ClusterIP == first.Spec.ClusterIP &&
+					len(svc.Spec.Ports) > 0 &&
+					svc.Spec.Ports[0].NodePort == first.Spec.Ports[0].NodePort
+			}, "3s", Interval).Should(BeTrue(), "server-assigned clusterIP/nodePort must survive apply")
+		})
+
+		It("adopts a Deployment written before Server-Side Apply, so a later removal converges", func() {
+			deploymentKey := types.NamespacedName{Name: wgName + "-dep", Namespace: wgNamespace}
+
+			// The suite leaks Deployments between specs; start from a clean slate.
+			stale := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: deploymentKey.Name, Namespace: deploymentKey.Namespace},
+			}
+			_ = k8sClient.Delete(context.Background(), stale)
+			Eventually(func() bool {
+				err := k8sClient.Get(context.Background(), deploymentKey, &appsv1.Deployment{})
+				return err != nil
+			}, Timeout, Interval).Should(BeTrue(), "leftover Deployment should be gone")
+
+			// Seed the legacy object BEFORE the Wireguard exists -- otherwise the operator creates
+			// the Deployment by apply first and this spec tests nothing. The real builder renders
+			// exactly what the pre-change operator wrote, wstunnel sidecar included; its owner
+			// reference is dropped because the Wireguard has no UID yet (the operator's apply adds
+			// one). "manager" is the field manager the production binary recorded before this change.
+			// This is the only Create of an operator-owned object in the suite (design §7.3).
+			owner := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			}
+			owner.Spec.Tunnel.Enabled = true
+			legacy, err := resources.NewDeploymentBuilder(k8sClient.Scheme(), wgTestImage, corev1.PullIfNotPresent).
+				ForWireguard(owner)
+			Expect(err).ShouldNot(HaveOccurred())
+			legacy.OwnerReferences = nil
+			Expect(k8sClient.Create(context.Background(), legacy, client.FieldOwner("manager"))).Should(Succeed())
+			seededGeneration := legacy.Generation
+
+			Expect(k8sClient.Create(context.Background(), owner)).Should(Succeed())
+
+			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
+			// See reconcileServiceWithTypeLoadBalancer: wait for the Service, then call it once.
+			Eventually(func() error {
+				return k8sClient.Get(context.Background(), serviceKey, &corev1.Service{})
+			}, Timeout, Interval).Should(Succeed())
+			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, "localhost")).Should(Succeed())
+
+			// Adopted: the owner reference proves the operator's apply ran (the migration patch
+			// alone adds none).
+			Eventually(func() bool {
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
+					return false
+				}
+				var managers []string
+				for _, mf := range dep.ManagedFields {
+					managers = append(managers, mf.Manager)
+				}
+				return len(dep.OwnerReferences) > 0 && slices.Contains(managers, FieldManager)
+			}, Timeout, Interval).Should(BeTrue(), "the operator should have applied over the legacy Deployment")
+
+			adopted := &appsv1.Deployment{}
+			Expect(k8sClient.Get(context.Background(), deploymentKey, adopted)).Should(Succeed())
+			Expect(adopted.Generation).Should(Equal(seededGeneration),
+				"adopting identical content must not change the stored spec or trigger a rollout")
+
+			Eventually(func() error {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return err
+				}
+				wg.Spec.Tunnel.Enabled = false
+				return k8sClient.Update(context.Background(), wg)
+			}, Timeout, Interval).Should(Succeed())
+
+			// The proof that adoption is complete. Without the legacy-manager migration in
+			// applyOwned, "manager" still co-owns the sidecar and the apiserver never prunes it.
+			Eventually(func() []string {
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
+					return nil
+				}
+				var names []string
+				for _, c := range dep.Spec.Template.Spec.Containers {
+					names = append(names, c.Name)
+				}
+				return names
+			}, Timeout, Interval).Should(Equal([]string{"agent"}), "the legacy-owned wstunnel sidecar must be removed")
+
+			removed := &appsv1.Deployment{}
+			Expect(k8sClient.Get(context.Background(), deploymentKey, removed)).Should(Succeed())
+			var managers []string
+			for _, mf := range removed.ManagedFields {
+				managers = append(managers, mf.Manager)
+			}
+			Expect(managers).ShouldNot(ContainElement("manager"), "the legacy Update entry must be gone")
+		})
+
+		It("adopts a legacy Service without moving its clusterIP or nodePort allocation", func() {
+			// Spec 6's Service variant (design §10.2 item 10): if the legacy entry owned an
+			// allocated field, migration would hand it to the operator, whose next apply
+			// relinquishes it. The assertions below pin that it owns neither clusterIP nor
+			// nodePort, and that both allocations survive adoption.
+			// Same seeding rules as above; BeforeEach already deletes Services.
+			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
+			owner := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			}
+			owner.Spec.ServiceType = corev1.ServiceTypeNodePort
+			legacy, err := resources.NewServiceBuilder(k8sClient.Scheme()).ForWireguard(owner, corev1.ServiceTypeNodePort)
+			Expect(err).ShouldNot(HaveOccurred())
+			legacy.OwnerReferences = nil
+			Expect(k8sClient.Create(context.Background(), legacy, client.FieldOwner("manager"))).Should(Succeed())
+
+			seeded := &corev1.Service{}
+			Expect(k8sClient.Get(context.Background(), serviceKey, seeded)).Should(Succeed())
+			Expect(seeded.Spec.ClusterIP).ShouldNot(BeEmpty())
+			Expect(seeded.Spec.Ports).ShouldNot(BeEmpty())
+			Expect(seeded.Spec.Ports[0].NodePort).ShouldNot(BeZero())
+
+			// The apiserver allocated clusterIP and nodePort itself, so the legacy Update entry
+			// must not own them: there is nothing allocated for the migration to hand over.
+			var legacyFields string
+			for _, mf := range seeded.ManagedFields {
+				if mf.Manager == "manager" && mf.Operation == metav1.ManagedFieldsOperationUpdate && mf.FieldsV1 != nil {
+					legacyFields = string(mf.FieldsV1.Raw)
+				}
+			}
+			Expect(legacyFields).ShouldNot(BeEmpty(), "the seed must carry an Update entry for manager")
+			Expect(legacyFields).ShouldNot(ContainSubstring(`"f:clusterIP"`), "the legacy entry must not own clusterIP")
+			Expect(legacyFields).ShouldNot(ContainSubstring(`"f:nodePort"`), "the legacy entry must not own nodePort")
+
+			Expect(k8sClient.Create(context.Background(), owner)).Should(Succeed())
+
+			adopted := &corev1.Service{}
+			Eventually(func() bool {
+				if err := k8sClient.Get(context.Background(), serviceKey, adopted); err != nil {
+					return false
+				}
+				var managers []string
+				for _, mf := range adopted.ManagedFields {
+					managers = append(managers, mf.Manager)
+				}
+				return len(adopted.OwnerReferences) > 0 &&
+					slices.Contains(managers, FieldManager) && !slices.Contains(managers, "manager")
+			}, Timeout, Interval).Should(BeTrue(), "the operator should adopt the legacy Service")
+
+			Expect(adopted.Spec.ClusterIP).Should(Equal(seeded.Spec.ClusterIP))
+			Expect(adopted.Spec.Ports).ShouldNot(BeEmpty())
+			Expect(adopted.Spec.Ports[0].NodePort).Should(Equal(seeded.Spec.Ports[0].NodePort))
+		})
+
+		It("reports Degraded while an apply can never succeed, and clears it once one does", func() {
+			// nodePort on a ClusterIP Service is rejected by the apiserver, permanently.
+			created := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			}
+			created.Spec.ServiceType = corev1.ServiceTypeClusterIP
+			created.Spec.NodePort = 30123
+			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
+
+			Eventually(func() string {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return "get-failed"
+				}
+				for _, c := range wg.Status.Conditions {
+					if c.Type == ConditionDegraded && c.Status == metav1.ConditionTrue {
+						return c.Reason
+					}
+				}
+				return "no-degraded-condition"
+			}, Timeout, Interval).Should(Equal("ServiceApplyFailed"))
+
+			// Remove the cause. The next reconcile applies every object, so Ready must be True and
+			// Degraded must be False -- not left True beside it from the earlier failure.
+			Eventually(func() error {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return err
+				}
+				wg.Spec.NodePort = 0
+				return k8sClient.Update(context.Background(), wg)
+			}, Timeout, Interval).Should(Succeed())
+
+			Eventually(func() map[string]metav1.ConditionStatus {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return nil
+				}
+				got := map[string]metav1.ConditionStatus{}
+				for _, c := range wg.Status.Conditions {
+					got[c.Type] = c.Status
+				}
+				return got
+			}, Timeout, Interval).Should(SatisfyAll(
+				HaveKeyWithValue(ConditionReady, metav1.ConditionTrue),
+				HaveKeyWithValue(ConditionDegraded, metav1.ConditionFalse),
+			), "a successful reconcile must clear Degraded")
+		})
 	})
 
 	Context("PersistentKeepalive", func() {
@@ -1913,6 +2194,49 @@ var _ = Describe("wireguard controller", func() {
 				ContainSubstring("PreUp = wstunnel client"),
 				ContainSubstring("PostDown = killall wstunnel"),
 			))
+		})
+
+		It("removes the wstunnel sidecar when the tunnel is disabled again", func() {
+			created := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			}
+			created.Spec.Tunnel.Enabled = true
+			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
+
+			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
+			// See reconcileServiceWithTypeLoadBalancer: wait for the Service, then call it once.
+			Eventually(func() error {
+				return k8sClient.Get(context.Background(), serviceKey, &corev1.Service{})
+			}, Timeout, Interval).Should(Succeed())
+			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, "localhost")).Should(Succeed())
+
+			deploymentKey := types.NamespacedName{Name: wgName + "-dep", Namespace: wgNamespace}
+			Eventually(func() int {
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
+					return -1
+				}
+				return len(dep.Spec.Template.Spec.Containers)
+			}, Timeout, Interval).Should(Equal(2), "wstunnel sidecar should be present")
+
+			Eventually(func() error {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return err
+				}
+				wg.Spec.Tunnel.Enabled = false
+				return k8sClient.Update(context.Background(), wg)
+			}, Timeout, Interval).Should(Succeed())
+
+			// This is the case equality.Semantic.DeepDerivative cannot detect: a desired list
+			// shorter than the actual one is reported as "no change needed".
+			Eventually(func() int {
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
+					return -1
+				}
+				return len(dep.Spec.Template.Spec.Containers)
+			}, Timeout, Interval).Should(Equal(1), "wstunnel sidecar should be removed")
 		})
 	})
 

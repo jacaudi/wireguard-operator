@@ -135,6 +135,20 @@ func (r *WireguardReconciler) updateStatus(ctx context.Context, req ctrl.Request
 
 	meta.SetStatusCondition(&latest.Status.Conditions, cond)
 
+	// Ready=True is written only once every apply in the reconcile has succeeded, so it also clears
+	// a Degraded left by an earlier failure. It must ride in this same write: a separate
+	// updateStatus call for Degraded would set the summary below to Error, and a second write that
+	// hits a Conflict is swallowed, so the clearing could be lost without trace.
+	if cond.Type == ConditionReady && cond.Status == metav1.ConditionTrue {
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               ConditionDegraded,
+			Status:             metav1.ConditionFalse,
+			Reason:             "Reconciled",
+			Message:            "All owned resources applied",
+			ObservedGeneration: cond.ObservedGeneration,
+		})
+	}
+
 	// Backward-compatible summary fields derived from condition type
 	switch cond.Type {
 	case ConditionReady:
