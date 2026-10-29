@@ -15,8 +15,7 @@ var _ = Describe("wireguard controller", func() {
 kind: Wireguard
 metadata:
   name: vpn
-spec:
-  serviceType: "NodePort"`
+spec: {}`
 
 		// kubectl apply -f
 		output, err := KubectlApply(wireguardYaml, TestNamespace)

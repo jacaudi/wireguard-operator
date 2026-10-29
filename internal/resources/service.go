@@ -39,36 +39,26 @@ func NewServiceBuilder(scheme *runtime.Scheme) *ServiceBuilder {
 	return &ServiceBuilder{scheme: scheme}
 }
 
-// ForWireguard creates a service for a Wireguard server.
-func (b *ServiceBuilder) ForWireguard(wg *v1alpha1.Wireguard, serviceType corev1.ServiceType) (*corev1.Service, error) {
+// ForWireguard creates the ClusterIP service for a Wireguard server.
+func (b *ServiceBuilder) ForWireguard(wg *v1alpha1.Wireguard) (*corev1.Service, error) {
 	labels := LabelsForWireguard(wg.Name)
-
-	svcPorts := []corev1.ServicePort{{
-		Name:       "wireguard",
-		Protocol:   corev1.ProtocolUDP,
-		NodePort:   wg.Spec.NodePort,
-		Port:       WireguardPort,
-		TargetPort: intstr.FromInt(WireguardPort),
-	}}
 
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        wg.Name + "-svc",
-			Namespace:   wg.Namespace,
-			Annotations: wg.Spec.ServiceAnnotations,
-			Labels:      labels,
+			Name:      wg.Name + "-svc",
+			Namespace: wg.Namespace,
+			Labels:    labels,
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: labels,
-			Ports:    svcPorts,
-			Type:     serviceType,
+			Ports: []corev1.ServicePort{{
+				Name:       "wireguard",
+				Protocol:   corev1.ProtocolUDP,
+				Port:       WireguardPort,
+				TargetPort: intstr.FromInt(WireguardPort),
+			}},
+			Type: corev1.ServiceTypeClusterIP,
 		},
-	}
-
-	if svc.Spec.Type == corev1.ServiceTypeLoadBalancer {
-		if wg.Spec.Address != "" {
-			svc.Spec.LoadBalancerIP = wg.Spec.Address
-		}
 	}
 
 	if err := SetOwnerReference(wg, svc, b.scheme); err != nil {

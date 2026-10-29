@@ -174,9 +174,6 @@ spec:
     - jsonPath: .status.status
       name: Status
       type: string
-    - jsonPath: .status.address
-      name: Address
-      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -205,12 +202,6 @@ spec:
           spec:
             description: WireguardSpec defines the desired state of Wireguard
             properties:
-              address:
-                description: |-
-                  A string field that specifies the address for the Wireguard Service.
-                  When ServiceType is LoadBalancer, this can be used to request a fixed Service IP.
-                  If ExternalAddress is not set, this value is also used as the peer endpoint.
-                type: string
               agent:
                 description: WireguardPodSpec defines spec for respective containers
                   created for Wireguard
@@ -276,11 +267,6 @@ spec:
                   be useful to enable if the peers are having problems with sending
                   traffic to the internet.
                 type: boolean
-              externalAddress:
-                description: |-
-                  A string field that specifies the external address where peers should connect to this Wireguard instance.
-                  When set, this is used for peer endpoints instead of Address or Service status.
-                type: string
               nodeSelector:
                 additionalProperties:
                   type: string
@@ -289,21 +275,6 @@ spec:
                 description: |-
                   PeerCIDR is the IPv4 CIDR range from which Wireguard peer addresses will be allocated.
                   If omitted, the operator will default to 10.8.0.0/24.
-                type: string
-              port:
-                description: A field that specifies the value to use for a nodePort
-                  ServiceType
-                format: int32
-                type: integer
-              serviceAnnotations:
-                additionalProperties:
-                  type: string
-                description: A map of key value strings for service annotations
-                type: object
-              serviceType:
-                description: A field that specifies the type of Kubernetes service
-                  that should be used for the Wireguard VPN. This could be ClusterIP,
-                  NodePort or LoadBalancer, depending on the needs of the deployment.
                 type: string
               tolerations:
                 description: A list of Kubernetes taint tolerations applied to the
@@ -353,10 +324,6 @@ spec:
           status:
             description: WireguardStatus defines the observed state of Wireguard
             properties:
-              address:
-                description: A string field that specifies the address for the Wireguard
-                  VPN server that is currently being used.
-                type: string
               conditions:
                 description: Conditions represent the latest available observations
                   of the Wireguard's state.
@@ -423,40 +390,9 @@ spec:
                   the status of Wireguard. This could include error messages or other
                   information that helps to diagnose issues with the wg instance.
                 type: string
-              port:
-                description: A string field that specifies the port for the Wireguard
-                  VPN server that is currently being used.
-                type: string
-              resources:
-                description: Resource-level status information for associated Kubernetes
-                  resources.
-                items:
-                  description: Resource describes the observed state of a related
-                    Kubernetes resource.
-                  properties:
-                    image:
-                      description: The container image when applicable (e.g., for
-                        Deployments).
-                      type: string
-                    name:
-                      description: The resource name (e.g., my-wg-dep, my-wg-svc).
-                      type: string
-                    status:
-                      description: A short status string (e.g., Ready, Pending, Error).
-                      type: string
-                    type:
-                      description: The resource type (e.g., Deployment, Service, ConfigMap,
-                        Secret).
-                      type: string
-                  type: object
-                type: array
               status:
                 description: A string field that represents the current status of
                   Wireguard. This could include values like ready, pending, or error.
-                type: string
-              uniqueIdentifier:
-                description: A stable identifier for the Wireguard instance (e.g.,
-                  server public key).
                 type: string
             type: object
         type: object
@@ -534,13 +470,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  verbs:
-  - list
   - watch
 - apiGroups:
   - apps
