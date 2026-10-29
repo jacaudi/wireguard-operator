@@ -58,7 +58,6 @@ type WireguardReconciler struct {
 	secretBuilder     *resources.SecretBuilder
 	serviceBuilder    *resources.ServiceBuilder
 	deploymentBuilder *resources.DeploymentBuilder
-	configMapBuilder  *resources.ConfigMapBuilder
 	ipAllocator       *ipam.Allocator
 }
 
@@ -222,7 +221,6 @@ func (r *WireguardReconciler) markPeerPublicKeyMissing(ctx context.Context, peer
 
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="apps",resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="apps",resources=pods,verbs=get;list;watch;create;update;patch;delete
@@ -409,31 +407,6 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// configmap
-
-	configFound := &corev1.ConfigMap{}
-	err = r.Get(ctx, types.NamespacedName{Name: wireguard.Name + "-config", Namespace: wireguard.Namespace}, configFound)
-	if err != nil && errors.IsNotFound(err) {
-		config, err := r.configMapBuilder.ForWireguard(wireguard)
-		if err != nil {
-			log.Error(err, "Failed to build configmap", "wireguard.Name", wireguard.Name)
-			return ctrl.Result{}, err
-		}
-		log.Info("Creating a new config", "config.Namespace", config.Namespace, "config.Name", config.Name)
-		err = r.Create(ctx, config)
-		if err != nil {
-			log.Error(err, "Failed to create new dep", "dep.Namespace", config.Namespace, "dep.Name", config.Name)
-			return ctrl.Result{}, err
-		}
-
-		err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "ConfigMapPending", Message: "Waiting for configmap to be created"})
-
-		return ctrl.Result{}, err
-	} else if err != nil {
-		log.Error(err, "Failed to get config")
-		return ctrl.Result{}, err
-	}
-
 	// deployment
 	//
 	// One build, one apply. The apiserver diffs the applied field set against the stored
@@ -467,14 +440,12 @@ func (r *WireguardReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.secretBuilder = resources.NewSecretBuilder(r.Scheme)
 	r.serviceBuilder = resources.NewServiceBuilder(r.Scheme)
 	r.deploymentBuilder = resources.NewDeploymentBuilder(r.Scheme, r.AgentImage, r.AgentImagePullPolicy)
-	r.configMapBuilder = resources.NewConfigMapBuilder(r.Scheme)
 	r.ipAllocator = ipam.NewAllocator()
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Wireguard{}).
 		Owns(&v1alpha1.WireguardPeer{}).
 		Owns(&corev1.Service{}).
-		Owns(&corev1.ConfigMap{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Secret{}).
 		Complete(r)

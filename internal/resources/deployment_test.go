@@ -2,6 +2,7 @@ package resources
 
 import (
 	"maps"
+	"slices"
 	"testing"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
@@ -46,5 +47,25 @@ func TestAgentContainerExposesOnlyWireguardAndHealthPorts(t *testing.T) {
 	want := map[string]int32{"wireguard": WireguardPort, "http": HTTPPort}
 	if !maps.Equal(got, want) {
 		t.Errorf("agent ports = %v, want %v", got, want)
+	}
+}
+
+func TestDeploymentAlwaysEnablesIPForwardingAndReadsNoConfigMap(t *testing.T) {
+	spec := buildDeployment(t, testWireguard()).Spec.Template.Spec
+
+	if len(spec.InitContainers) != 1 || spec.InitContainers[0].Name != "sysctl" {
+		t.Fatalf("init containers = %v, want exactly [sysctl]", spec.InitContainers)
+	}
+	sc := spec.InitContainers[0].SecurityContext
+	if sc == nil || sc.Privileged == nil || !*sc.Privileged {
+		t.Errorf("sysctl init container must be privileged, got %+v", sc)
+	}
+
+	agent := spec.Containers[0]
+	if len(agent.EnvFrom) != 0 {
+		t.Errorf("agent envFrom = %v, want none", agent.EnvFrom)
+	}
+	if slices.Contains(agent.Command, "--wg-use-userspace-implementation") {
+		t.Errorf("agent command %v must not force the userspace implementation", agent.Command)
 	}
 }
