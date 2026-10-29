@@ -16,8 +16,8 @@ make generate    # regenerate deepcopy functions after changing api/
 
 `make test` regenerates before running, so a stale CRD or an unformatted file fails
 locally rather than in CI. Never hand-edit `zz_generated.deepcopy.go` or anything under
-`config/crd/bases` — regenerate instead. `release.yaml` and `bundle/` are produced at
-release time and should not be edited by hand either.
+`config/crd/bases` — regenerate instead. `release.yaml` is produced at release time and
+should not be edited by hand either.
 
 ## Engineering practices
 
