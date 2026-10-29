@@ -77,7 +77,6 @@ type WireguardSpec struct {
 	// A list of Kubernetes taint tolerations applied to the Wireguard pod.
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 	Agent       WireguardPodSpec    `json:"agent,omitempty"`
-	Metric      WireguardPodSpec    `json:"metric,omitempty"`
 	// Tunnel configures optional traffic obfuscation. When enabled, a sidecar
 	// container tunnels WireGuard UDP traffic over WebSocket/TLS.
 	Tunnel TunnelSpec `json:"tunnel,omitempty"`

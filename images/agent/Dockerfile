@@ -1,6 +1,5 @@
 ARG WIREGUARD_GO_SRC=/usr/local/src/wireguard-go
 ARG WIREGUARD_AGENT_SRC=/usr/local/src/wireguard-agent
-ARG PROMETHEUS_WIREGUARD_EXPORTER_SRC=/usr/local/src/prometheus-wireguard-exporter
 
 # step 1: Build Agent
 FROM --platform=${BUILDPLATFORM} golang:1.26 AS golang-builder
@@ -35,7 +34,6 @@ RUN set -eux; \
 FROM debian:trixie
 ARG WIREGUARD_GO_SRC
 ARG WIREGUARD_AGENT_SRC
-ARG PROMETHEUS_WIREGUARD_EXPORTER_SRC
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y iptables wireguard-tools \

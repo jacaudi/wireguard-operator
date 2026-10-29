@@ -131,19 +131,19 @@ var _ = Describe("no update churn", func() {
 		}, churnTimeout, churnInterval).Should(Succeed())
 
 		wgKey := types.NamespacedName{Name: churnName, Namespace: churnNS}
-		metricsSvc := churnName + "-metrics-svc"
+		svcName := churnName + "-svc"
 
-		// awaitQuiet returns once no reconcile is in flight: the metrics Service is the first object a
-		// reconcile applies, so two seconds without a metrics write means the cascade has finished.
+		// awaitQuiet returns once no reconcile is in flight: the Service is the first object a
+		// reconcile applies, so two seconds without a Service write means the cascade has finished.
 		awaitQuiet := func() {
-			n := writeCounter.writesTo(churnNS, metricsSvc)
-			Consistently(func() int { return writeCounter.writesTo(churnNS, metricsSvc) },
+			n := writeCounter.writesTo(churnNS, svcName)
+			Consistently(func() int { return writeCounter.writesTo(churnNS, svcName) },
 				"2s", churnInterval).Should(Equal(n), "a reconcile was still in flight")
 		}
 
 		// Let the create cascade finish. Ready=True is written only by a reconcile that applied all
-		// three objects, and the status write it causes triggers one more reconcile; wait that out
-		// too, so reset() cannot land between a reconcile's metrics apply and its Deployment apply.
+		// two objects, and the status write it causes triggers one more reconcile; wait that out
+		// too, so reset() cannot land between a reconcile's Service apply and its Deployment apply.
 		Eventually(func() bool {
 			live := &v1alpha1.Wireguard{}
 			if err := k8sClient.Get(context.Background(), wgKey, live); err != nil {
@@ -168,9 +168,9 @@ var _ = Describe("no update churn", func() {
 		//
 		// This is NOT a no-op for every owned object: agent.State embeds the whole Wireguard
 		// (wireguard_controller.go, `Server: *wireguard.DeepCopy()`), so the annotation is
-		// serialised into state.json and the peer-config Secret is legitimately rewritten. That
-		// is why the assertions below name the Deployment and Services explicitly rather than
-		// counting everything in the namespace.
+		// serialised into state.json and the server Secret is legitimately rewritten. That is why
+		// the assertions below name the Deployment and Service explicitly rather than counting
+		// everything in the namespace.
 		for i := range 3 {
 			Eventually(func() error {
 				live := &v1alpha1.Wireguard{}
@@ -196,23 +196,20 @@ var _ = Describe("no update churn", func() {
 		}, "3s", churnInterval).Should(Equal(settled.ResourceVersion),
 			"the Deployment must not be rewritten when nothing it renders has changed")
 
-		// The metrics Service is applied exactly once per reconcile: one call site, no branches.
-		// It is therefore a reconcile counter. The Deployment must match it one-for-one -- the
+		// The Service is applied exactly once per reconcile: one call site, no branches. It is
+		// therefore a reconcile counter. The Deployment must match it one-for-one -- the
 		// pre-change code could write the Deployment up to four times in a single reconcile.
 		awaitQuiet()
-		metricsWrites := writeCounter.writesTo(churnNS, churnName+"-metrics-svc")
+		svcWrites := writeCounter.writesTo(churnNS, svcName)
 		depWrites := writeCounter.writesTo(churnNS, churnName+"-dep")
-		svcWrites := writeCounter.writesTo(churnNS, churnName+"-svc")
 
-		Expect(metricsWrites).Should(BeNumerically(">", 0), "sanity: the reconciler should have run")
-		Expect(depWrites).Should(Equal(metricsWrites),
+		Expect(svcWrites).Should(BeNumerically(">", 0), "sanity: the reconciler should have run")
+		Expect(depWrites).Should(Equal(svcWrites),
 			"the Deployment must be applied exactly once per reconcile")
-		Expect(svcWrites).Should(Equal(metricsWrites),
-			"the Service must be applied exactly once per reconcile")
 
 		// SSA-born objects carry no legacy entry, so applyOwned must never send them a migration
 		// patch -- counted from creation, not from reset().
-		Expect(writeCounter.migrationsTo(churnNS, churnName+"-dep", churnName+"-svc", churnName+"-metrics-svc")).
+		Expect(writeCounter.migrationsTo(churnNS, churnName+"-dep", svcName)).
 			Should(BeZero(), "an object the operator created by apply must never be migrated")
 	})
 })

@@ -1,5 +1,4 @@
 # Wireguard Operator
-<img width="1394" alt="Grafana dashboard screenshot" src="readme/screenshot.png">
 
 Painless deployment of wireguard on kubernetes
 

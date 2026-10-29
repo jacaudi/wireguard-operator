@@ -21,8 +21,6 @@ resources:
 #- ../webhook
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
-# [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
-#- ../prometheus
 
 # Mount the controller config file for loading manager configurations
 # through a ComponentConfig type
@@ -42,11 +40,3 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 patches:
 - path: manager_args_patch.yaml
-# [PROMETHEUS] If you enabled prometheus above, uncomment this to update ClusterRoleBinding with correct prometheus SA.
-# update the patch to change the name or namespace for the prometheus SA
-#- path: metrics_reader_patch.yaml
-#  target:
-#    group: rbac.authorization.k8s.io
-#    version: v1
-#    kind: ClusterRoleBinding
-#    name: metrics-reader

@@ -27,8 +27,6 @@ import (
 const (
 	// WireguardPort is the default port for Wireguard VPN.
 	WireguardPort = 51820
-	// MetricsPort is the port for exposing metrics.
-	MetricsPort = 9586
 	// DefaultTunnelPort is the default port for the wstunnel sidecar.
 	DefaultTunnelPort = 443
 )
@@ -91,35 +89,6 @@ func (b *ServiceBuilder) ForWireguard(wg *v1alpha1.Wireguard, serviceType corev1
 		if wg.Spec.Address != "" {
 			svc.Spec.LoadBalancerIP = wg.Spec.Address
 		}
-	}
-
-	if err := SetOwnerReference(wg, svc, b.scheme); err != nil {
-		return nil, err
-	}
-
-	return svc, nil
-}
-
-// ForWireguardMetrics creates a metrics service for a Wireguard server.
-func (b *ServiceBuilder) ForWireguardMetrics(wg *v1alpha1.Wireguard) (*corev1.Service, error) {
-	labels := LabelsForWireguard(wg.Name)
-
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      wg.Name + "-metrics-svc",
-			Namespace: wg.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: labels,
-			Ports: []corev1.ServicePort{{
-				Name:       "metrics",
-				Protocol:   corev1.ProtocolTCP,
-				Port:       MetricsPort,
-				TargetPort: intstr.FromInt(MetricsPort),
-			}},
-			Type: corev1.ServiceTypeClusterIP,
-		},
 	}
 
 	if err := SetOwnerReference(wg, svc, b.scheme); err != nil {
