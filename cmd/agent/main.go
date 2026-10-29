@@ -13,7 +13,6 @@ import (
 
 	"github.com/go-logr/stdr"
 	"github.com/jacaudi/wireguard-operator/internal/agent"
-	"github.com/jacaudi/wireguard-operator/internal/iptables"
 	"github.com/jacaudi/wireguard-operator/internal/wireguard"
 )
 
@@ -81,9 +80,6 @@ func main() {
 		WgUserspaceImplementationFallback: wgUserspaceImplementationFallback,
 		WgUseUserspaceImpl:                wgUseUserspaceImpl,
 	}
-	it := iptables.Iptables{
-		Logger: log.WithName("iptables"),
-	}
 
 	close, err := agent.OnStateChange(configFilePath, log.WithName("onStateChange"), func(state agent.State) {
 		log.Info("Received a new state")
@@ -93,12 +89,6 @@ func main() {
 		if err != nil {
 			log.Error(err, "Error while sycncing wireguard")
 		}
-
-		err = it.Sync(state)
-		if err != nil {
-			log.Error(err, "Error while syncing network policies")
-		}
-
 	})
 
 	if err != nil {
