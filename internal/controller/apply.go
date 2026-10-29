@@ -1,8 +1,4 @@
 // Package controllers implements the Wireguard and WireguardPeer reconcilers.
-//
-// golangci-lint's revive `package-comments` rule fires on every line of a new file under the
-// `new-from-merge-base` ratchet, and no existing file in this package carries a package comment.
-// Putting it here, on the new file, satisfies the rule without touching unrelated files.
 package controllers
 
 import (
@@ -48,7 +44,7 @@ var legacyFieldManagers = sets.New("manager")
 // a value owned by another manager, so the first apply over an object previously written by
 // Create/Update succeeds without it -- but the first apply that actually changes such a field
 // would fail, and the operator would wedge. Forcing is also what makes the operator converge an
-// object a human edited with kubectl, which is the point of this change.
+// object a human edited with kubectl.
 //
 // Forcing alone does not finish adoption. It transfers only the fields whose value differs, so
 // the legacy manager keeps every field the operator renders unchanged, and the apiserver never
