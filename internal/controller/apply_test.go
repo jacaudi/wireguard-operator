@@ -204,10 +204,8 @@ var _ = Describe("applyOwned", func() {
 			_ = k8sClient.Delete(context.Background(), wg)
 			_ = k8sClient.Delete(context.Background(), &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: nn.Name + "-dep", Namespace: applyNS}})
-			for _, svcName := range []string{nn.Name + "-svc", nn.Name + "-metrics-svc"} {
-				_ = k8sClient.Delete(context.Background(), &corev1.Service{
-					ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: applyNS}})
-			}
+			_ = k8sClient.Delete(context.Background(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: nn.Name + "-svc", Namespace: applyNS}})
 		}()
 
 		_, err := r.failDegraded(context.Background(),

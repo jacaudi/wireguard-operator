@@ -498,15 +498,6 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		filteredPeers = append(filteredPeers, peer)
 	}
 
-	// metrics service
-	desiredMetricsSvc, err := r.serviceBuilder.ForWireguardMetrics(wireguard)
-	if err != nil {
-		return r.failDegraded(ctx, req, err, "MetricsServiceBuildFailed", "Failed to build metrics service")
-	}
-	if err := r.applyOwned(ctx, desiredMetricsSvc); err != nil {
-		return r.failDegraded(ctx, req, err, "MetricsServiceApplyFailed", "Failed to apply metrics service")
-	}
-
 	serviceType := corev1.ServiceTypeLoadBalancer
 
 	if wireguard.Spec.ServiceType != "" {

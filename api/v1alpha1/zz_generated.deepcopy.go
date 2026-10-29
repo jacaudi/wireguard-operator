@@ -362,7 +362,6 @@ func (in *WireguardSpec) DeepCopyInto(out *WireguardSpec) {
 		}
 	}
 	in.Agent.DeepCopyInto(&out.Agent)
-	in.Metric.DeepCopyInto(&out.Metric)
 	in.Tunnel.DeepCopyInto(&out.Tunnel)
 }
 

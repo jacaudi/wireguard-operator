@@ -168,11 +168,6 @@ func (b *DeploymentBuilder) agentContainer(wg *v1alpha1.Wireguard, readOnlyRootF
 				Name:          "http",
 				Protocol:      corev1.ProtocolTCP,
 			},
-			{
-				ContainerPort: MetricsPort,
-				Name:          "metrics",
-				Protocol:      corev1.ProtocolTCP,
-			},
 		},
 		EnvFrom: []corev1.EnvFromSource{
 			{
