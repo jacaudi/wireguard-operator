@@ -130,12 +130,37 @@ var _ = Describe("no update churn", func() {
 			return k8sClient.Get(context.Background(), depKey, &appsv1.Deployment{})
 		}, churnTimeout, churnInterval).Should(Succeed())
 
-		// Record the resourceVersion the Consistently below must hold. This read does not wait
-		// for convergence; it only snapshots the Deployment as it is now.
+		wgKey := types.NamespacedName{Name: churnName, Namespace: churnNS}
+		metricsSvc := churnName + "-metrics-svc"
+
+		// awaitQuiet returns once no reconcile is in flight: the metrics Service is the first object a
+		// reconcile applies, so two seconds without a metrics write means the cascade has finished.
+		awaitQuiet := func() {
+			n := writeCounter.writesTo(churnNS, metricsSvc)
+			Consistently(func() int { return writeCounter.writesTo(churnNS, metricsSvc) },
+				"2s", churnInterval).Should(Equal(n), "a reconcile was still in flight")
+		}
+
+		// Let the create cascade finish. Ready=True is written only by a reconcile that applied all
+		// three objects, and the status write it causes triggers one more reconcile; wait that out
+		// too, so reset() cannot land between a reconcile's metrics apply and its Deployment apply.
+		Eventually(func() bool {
+			live := &v1alpha1.Wireguard{}
+			if err := k8sClient.Get(context.Background(), wgKey, live); err != nil {
+				return false
+			}
+			for _, c := range live.Status.Conditions {
+				if c.Type == ConditionReady && c.Status == metav1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, churnTimeout, churnInterval).Should(BeTrue(), "the churn Wireguard should reach Ready before measuring")
+		awaitQuiet()
+
+		// Now the snapshot really is settled.
 		var settled appsv1.Deployment
-		Eventually(func() error {
-			return k8sClient.Get(context.Background(), depKey, &settled)
-		}, churnTimeout, churnInterval).Should(Succeed())
+		Expect(k8sClient.Get(context.Background(), depKey, &settled)).Should(Succeed())
 
 		writeCounter.reset()
 
@@ -174,6 +199,7 @@ var _ = Describe("no update churn", func() {
 		// The metrics Service is applied exactly once per reconcile: one call site, no branches.
 		// It is therefore a reconcile counter. The Deployment must match it one-for-one -- the
 		// pre-change code could write the Deployment up to four times in a single reconcile.
+		awaitQuiet()
 		metricsWrites := writeCounter.writesTo(churnNS, churnName+"-metrics-svc")
 		depWrites := writeCounter.writesTo(churnNS, churnName+"-dep")
 		svcWrites := writeCounter.writesTo(churnNS, churnName+"-svc")

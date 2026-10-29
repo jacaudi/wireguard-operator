@@ -1697,7 +1697,7 @@ var _ = Describe("wireguard controller", func() {
 			// exactly what the pre-change operator wrote, wstunnel sidecar included; its owner
 			// reference is dropped because the Wireguard has no UID yet (the operator's apply adds
 			// one). "manager" is the field manager the production binary recorded before this change.
-			// This is the only Create of an operator-owned object in the suite (design §7.3).
+			// One of the two legacy seeds in the suite (see the Service variant below); design §7.3.
 			owner := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
 			}
