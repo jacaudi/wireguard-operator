@@ -484,36 +484,15 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		filteredPeers = append(filteredPeers, peer)
 	}
 
-	svcFound := &corev1.Service{}
-	err = r.Get(ctx, types.NamespacedName{Name: wireguard.Name + "-metrics-svc", Namespace: wireguard.Namespace}, svcFound)
-	if err != nil && errors.IsNotFound(err) {
-
-		svc, err := r.serviceBuilder.ForWireguardMetrics(wireguard)
-		if err != nil {
-			log.Error(err, "Failed to build metrics service", "wireguard.Name", wireguard.Name)
-			return ctrl.Result{}, err
-		}
-		log.Info("Creating a new service", "service.Namespace", svc.Namespace, "service.Name", svc.Name)
-		err = r.Create(ctx, svc)
-		if err != nil {
-			log.Error(err, "Failed to create new service", "service.Namespace", svc.Namespace, "service.Name", svc.Name)
-			return ctrl.Result{}, err
-		}
-		// svc created successfully - return and requeue
-
-		err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "MetricsServicePending", Message: "Waiting for metrics service to be created"})
-
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-
-		return ctrl.Result{}, nil
-	} else if err != nil {
-		log.Error(err, "Failed to get service")
-		return ctrl.Result{}, err
+	// metrics service
+	desiredMetricsSvc, err := r.serviceBuilder.ForWireguardMetrics(wireguard)
+	if err != nil {
+		return r.failDegraded(ctx, req, err, "MetricsServiceBuildFailed", "Failed to build metrics service")
+	}
+	if err := r.applyOwned(ctx, desiredMetricsSvc); err != nil {
+		return r.failDegraded(ctx, req, err, "MetricsServiceApplyFailed", "Failed to apply metrics service")
 	}
 
-	svcFound = &corev1.Service{}
 	serviceType := corev1.ServiceTypeLoadBalancer
 
 	if wireguard.Spec.ServiceType != "" {
@@ -548,57 +527,20 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		dnsSearchDomain = wireguard.Spec.DnsSearchDomain
 	}
 
-	err = r.Get(ctx, types.NamespacedName{Name: wireguard.Name + "-svc", Namespace: wireguard.Namespace}, svcFound)
-	if err != nil && errors.IsNotFound(err) {
-		svc, err := r.serviceBuilder.ForWireguard(wireguard, serviceType)
-		if err != nil {
-			log.Error(err, "Failed to build service", "wireguard.Name", wireguard.Name)
-			return ctrl.Result{}, err
-		}
-		log.Info("Creating a new service", "service.Namespace", svc.Namespace, "service.Name", svc.Name)
-		err = r.Create(ctx, svc)
-		if err != nil {
-			log.Error(err, "Failed to create new service", "service.Namespace", svc.Namespace, "service.Name", svc.Name)
-			return ctrl.Result{}, err
-		}
-		// svc created successfully - return and requeue
-
-		err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "ServicePending", Message: "Waiting for service to be created"})
-
-		if err != nil {
-			log.Error(err, "Failed to update wireguard status", "service.Namespace", svc.Namespace, "service.Name", svc.Name)
-			return ctrl.Result{}, err
-		}
-
-		return ctrl.Result{}, nil
-	} else if err != nil {
-		log.Error(err, "Failed to get service")
-		return ctrl.Result{}, err
+	// service
+	//
+	// Every field the builder renders converges: annotations, target ports, protocols and the
+	// second port in dualMode. Server-assigned fields survive because the builder never renders
+	// them: clusterIP and ipFamilies are absent from the applied body, and a nodePort of 0 is
+	// dropped by omitempty, so the operator never takes ownership of the apiserver's allocation.
+	desiredSvc, err := r.serviceBuilder.ForWireguard(wireguard, serviceType)
+	if err != nil {
+		return r.failDegraded(ctx, req, err, "ServiceBuildFailed", "Failed to build service")
 	}
-
-	// Update service ports if tunnel configuration changed.
-	// Compare port count and port numbers to detect tunnel/dualMode toggling.
-	{
-		desiredSvc, err := r.serviceBuilder.ForWireguard(wireguard, serviceType)
-		if err != nil {
-			log.Error(err, "Failed to build service", "wireguard.Name", wireguard.Name)
-			return ctrl.Result{}, err
-		}
-		needsUpdate := len(svcFound.Spec.Ports) != len(desiredSvc.Spec.Ports)
-		if !needsUpdate && len(svcFound.Spec.Ports) > 0 {
-			if svcFound.Spec.Ports[0].Port != desiredSvc.Spec.Ports[0].Port {
-				needsUpdate = true
-			}
-		}
-		if needsUpdate {
-			log.Info("Updating service ports for tunnel configuration change")
-			svcFound.Spec.Ports = desiredSvc.Spec.Ports
-			if err := r.Update(ctx, svcFound); err != nil {
-				log.Error(err, "Failed to update service ports")
-				return ctrl.Result{}, err
-			}
-		}
+	if err := r.applyOwned(ctx, desiredSvc); err != nil {
+		return r.failDegraded(ctx, req, err, "ServiceApplyFailed", "Failed to apply service")
 	}
+	svcFound := desiredSvc
 
 	address := wireguard.Spec.ExternalAddress
 	if address == "" {
