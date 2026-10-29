@@ -86,10 +86,12 @@ issues:
   #
   # ENABLED HERE, DELIBERATELY. Measured on this repo at adoption: 117 findings
   # — 88 revive, 8 gosec, 8 nolintlint, 5 gocyclo, 3 gocritic, 2 errorlint,
-  # 2 modernize, 1 prealloc. The five gocyclo hits are the reconcile loop
-  # (`Reconcile` at cyclomatic complexity 121, `updateWireguardPeers` at 42),
-  # which issue #2 replaces wholesale — absorbing them by hand would mean
-  # editing code that is about to be rewritten.
+  # 2 modernize, 1 prealloc. Two of the five gocyclo hits are the reconcile
+  # loop: `Reconcile` (121 at adoption, 132 by be6d4e4) and
+  # `updateWireguardPeers` (42, then 43). Issue #2 replaced only Reconcile's
+  # Deployment and Service drift checks with Server-Side Apply, taking it to
+  # 97, and deliberately left updateWireguardPeers alone. Decomposing either is
+  # separate work, so both stay ratcheted rather than absorbed by hand.
   #
   # The 8 gosec findings were NOT ratcheted away: they are fixed in the same
   # commit that adds this file, because a leaked key or an unbounded read in a

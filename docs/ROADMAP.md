@@ -167,13 +167,15 @@ would have no runtime effect at all.
 
 ### 0.2 Replace trigger-based Deployment drift checks with declarative reconciliation ([#2](https://github.com/jacaudi/wireguard-operator/issues/2))
 
-The Deployment is only rebuilt when one of four specific checks fires: agent image
-(`:824`), userspace flag (`:844`), tunnel sidecar (`:861`), scheduling settings (`:871`).
-Any new spec field would need its own bespoke check or changes would silently not apply.
+The Deployment was rebuilt only when one of four hand-written checks fired — agent image drift,
+userspace flag toggle, wstunnel sidecar toggle, and nodeSelector/tolerations change — plus a
+create branch. All five rebuilt the same desired Deployment. Replaced with a single Server-Side
+Apply through `applyOwned`; see
+`docs/designs/2026-08-29-declarative-deployment-reconciliation-design.md`.
 
-- [ ] Desired Deployment computed once and semantically diffed against actual
-- [ ] Changing any spec field that affects the pod triggers an update
-- [ ] No hot-loop update churn from server-defaulted fields
+- [x] Desired Deployment computed once and semantically diffed against actual
+- [ ] Changing any spec field that affects the pod triggers an update — except spec.metric, tracked as #50
+- [x] No hot-loop update churn from server-defaulted fields
 
 ### 0.3 Rework iptables generation: non-flushing, operator-owned chains, correct egress ([#3](https://github.com/jacaudi/wireguard-operator/issues/3))
 
