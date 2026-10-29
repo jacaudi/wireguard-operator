@@ -21,8 +21,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -825,99 +823,15 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// deployment
-
-	deploymentFound := &appsv1.Deployment{}
-	err = r.Get(ctx, types.NamespacedName{Name: wireguard.Name + "-dep", Namespace: wireguard.Namespace}, deploymentFound)
-	if err != nil && errors.IsNotFound(err) {
-		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
-		if buildErr != nil {
-			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
-			return ctrl.Result{}, buildErr
-		}
-		log.Info("Creating a new dep", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name, "useUserspace", wireguard.Spec.UseWgUserspaceImplementation)
-		err = r.Create(ctx, dep)
-		if err != nil {
-			log.Error(err, "Failed to create new dep", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name)
-			return ctrl.Result{}, err
-		}
-		// Deployment created successfully - return and requeue
-		return ctrl.Result{}, err
-	} else if err != nil {
-		log.Error(err, "Failed to get dep")
-		return ctrl.Result{}, err
+	//
+	// One build, one apply. The apiserver diffs the applied field set against the stored
+	// object, so every field the builder renders converges without a bespoke drift check.
+	desiredDep, err := r.deploymentBuilder.ForWireguard(wireguard)
+	if err != nil {
+		return r.failDegraded(ctx, req, err, "DeploymentBuildFailed", "Failed to build deployment")
 	}
-
-	if deploymentFound.Spec.Template.Spec.Containers[0].Image != r.AgentImage {
-		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
-		if buildErr != nil {
-			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
-			return ctrl.Result{}, buildErr
-		}
-		err = r.Update(ctx, dep)
-		if err != nil {
-			log.Error(err, "unable to update deployment image", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name)
-			return ctrl.Result{}, err
-		}
-	}
-
-	// ensure userspace flag presence matches spec
-	desiredUserspace := wireguard.Spec.UseWgUserspaceImplementation
-	existingUserspace := false
-	for _, c := range deploymentFound.Spec.Template.Spec.Containers {
-		if c.Name == "agent" {
-			if slices.Contains(c.Command, "--wg-use-userspace-implementation") {
-				existingUserspace = true
-			}
-			break
-		}
-	}
-	if existingUserspace != desiredUserspace {
-		log.Info("Updating deployment userspace flag", "desired", desiredUserspace, "existing", existingUserspace)
-		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
-		if buildErr != nil {
-			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
-			return ctrl.Result{}, buildErr
-		}
-		if err := r.Update(ctx, dep); err != nil {
-			log.Error(err, "unable to update deployment userspace flag", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name)
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Ensure wstunnel sidecar presence matches spec
-	hasWstunnel := false
-	for _, c := range deploymentFound.Spec.Template.Spec.Containers {
-		if c.Name == "wstunnel" {
-			hasWstunnel = true
-			break
-		}
-	}
-	if hasWstunnel != wireguard.Spec.Tunnel.Enabled {
-		log.Info("Updating deployment tunnel sidecar", "desired", wireguard.Spec.Tunnel.Enabled, "existing", hasWstunnel)
-		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
-		if buildErr != nil {
-			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
-			return ctrl.Result{}, buildErr
-		}
-		if err := r.Update(ctx, dep); err != nil {
-			log.Error(err, "unable to update deployment tunnel sidecar", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name)
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Ensure scheduling settings remain in sync with spec updates.
-	if !reflect.DeepEqual(deploymentFound.Spec.Template.Spec.NodeSelector, wireguard.Spec.NodeSelector) ||
-		!reflect.DeepEqual(deploymentFound.Spec.Template.Spec.Tolerations, wireguard.Spec.Tolerations) {
-		log.Info("Updating deployment scheduling settings")
-		dep, buildErr := r.deploymentBuilder.ForWireguard(wireguard)
-		if buildErr != nil {
-			log.Error(buildErr, "Failed to build deployment", "wireguard.Name", wireguard.Name)
-			return ctrl.Result{}, buildErr
-		}
-		if err := r.Update(ctx, dep); err != nil {
-			log.Error(err, "unable to update deployment scheduling settings", "dep.Namespace", dep.Namespace, "dep.Name", dep.Name)
-			return ctrl.Result{}, err
-		}
+	if err := r.applyOwned(ctx, desiredDep); err != nil {
+		return r.failDegraded(ctx, req, err, "DeploymentApplyFailed", "Failed to apply deployment")
 	}
 
 	// Update resource-level status and unique identifier if available
@@ -961,18 +875,18 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Deployment status
 		depStatus := "Pending"
 		depImage := ""
-		if deploymentFound.Name != "" {
-			if deploymentFound.Status.ReadyReplicas > 0 {
+		if desiredDep.Name != "" {
+			if desiredDep.Status.ReadyReplicas > 0 {
 				depStatus = "Ready"
 			}
-			for _, c := range deploymentFound.Spec.Template.Spec.Containers {
+			for _, c := range desiredDep.Spec.Template.Spec.Containers {
 				if c.Name == "agent" {
 					depImage = c.Image
 					break
 				}
 			}
 		}
-		resourcesStatus = append(resourcesStatus, v1alpha1.Resource{Name: deploymentFound.Name, Type: "Deployment", Status: depStatus, Image: depImage})
+		resourcesStatus = append(resourcesStatus, v1alpha1.Resource{Name: desiredDep.Name, Type: "Deployment", Status: depStatus, Image: depImage})
 
 		// Compute tunnel status
 		tunnelStatus := "disabled"
