@@ -12,7 +12,9 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -122,6 +124,71 @@ var _ = Describe("applyOwned", func() {
 		live := &appsv1.Deployment{}
 		Expect(k8sClient.Get(context.Background(), key, live)).Should(Succeed())
 		Expect(live.Spec.Template.Spec.Containers[0].Image).Should(Equal("registry.invalid/probe:v1"))
+	})
+
+	It("migrates a legacy Update-owned object so a field it stops rendering is removed", func() {
+		ctx := context.Background()
+
+		// withSidecar renders the probe plus a second container. Seeded under "manager" -- the
+		// production binary's field manager before this change; the literal pins that on-cluster
+		// contract -- it is the pre-SSA shape: an object written by Create, owned by an Update entry.
+		withSidecar := func() *appsv1.Deployment {
+			dep := desired()
+			dep.Spec.Template.Spec.Containers = append(dep.Spec.Template.Spec.Containers,
+				corev1.Container{Name: "legacy-sidecar", Image: "registry.invalid/sidecar:v1"})
+			return dep
+		}
+		Expect(k8sClient.Create(ctx, withSidecar(), client.FieldOwner("manager"))).Should(Succeed())
+		seeded := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, key, seeded)).Should(Succeed())
+
+		// Adopt with identical content. The migration rewrites ownership only: the stored spec
+		// is untouched, and no Update entry is left behind -- not "manager", and not one for the
+		// client that sent the migration patch.
+		r := newTestReconciler()
+		Expect(r.applyOwned(ctx, withSidecar())).Should(Succeed())
+
+		adopted := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, key, adopted)).Should(Succeed())
+		Expect(adopted.Generation).Should(Equal(seeded.Generation), "adoption must not change the spec")
+		var managers []string
+		for _, mf := range adopted.ManagedFields {
+			managers = append(managers, mf.Manager)
+		}
+		Expect(managers).Should(ConsistOf(FieldManager))
+
+		// Stop rendering the sidecar. Only an exclusive owner can prune it.
+		Expect(r.applyOwned(ctx, desired())).Should(Succeed())
+
+		live := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, key, live)).Should(Succeed())
+		var containers []string
+		for _, c := range live.Spec.Template.Spec.Containers {
+			containers = append(containers, c.Name)
+		}
+		Expect(containers).Should(Equal([]string{"probe"}),
+			"a container the legacy manager co-owned must be pruned once ownership migrates")
+
+		// The migration is one write, once: re-applying identical content persists nothing.
+		Expect(r.applyOwned(ctx, desired())).Should(Succeed())
+		again := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, key, again)).Should(Succeed())
+		Expect(again.ResourceVersion).Should(Equal(live.ResourceVersion))
+	})
+
+	It("wraps its errors with the object's identity and keeps the API status inspectable", func() {
+		ctx := context.Background()
+
+		unregistered := newTestReconciler()
+		unregistered.Scheme = runtime.NewScheme()
+		Expect(unregistered.applyOwned(ctx, desired())).Should(
+			MatchError(ContainSubstring("resolve GVK for *v1.Deployment")))
+
+		invalid := desired()
+		invalid.Spec.Template.Spec.Containers = nil
+		err := newTestReconciler().applyOwned(ctx, invalid)
+		Expect(err).Should(MatchError(ContainSubstring("apply Deployment default/apply-seam-probe")))
+		Expect(apierrors.IsInvalid(err)).Should(BeTrue(), "the apiserver's status must survive wrapping: %v", err)
 	})
 
 	It("records a Degraded condition when failDegraded is called", func() {
