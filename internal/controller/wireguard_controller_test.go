@@ -1694,14 +1694,18 @@ var _ = Describe("wireguard controller", func() {
 
 			// Seed the legacy object BEFORE the Wireguard exists -- otherwise the operator creates
 			// the Deployment by apply first and this spec tests nothing. The real builder renders
-			// exactly what the pre-change operator wrote, wstunnel sidecar included; its owner
+			// exactly what the pre-change operator wrote, a toleration included; its owner
 			// reference is dropped because the Wireguard has no UID yet (the operator's apply adds
 			// one). "manager" is the field manager the production binary recorded before this change.
 			// One of the two legacy seeds in the suite (see the Service variant below); design §7.3.
 			owner := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
 			}
-			owner.Spec.Tunnel.Enabled = true
+			owner.Spec.Tolerations = []corev1.Toleration{{
+				Key:      "probe.test/legacy",
+				Operator: corev1.TolerationOpExists,
+				Effect:   corev1.TaintEffectNoSchedule,
+			}}
 			legacy, err := resources.NewDeploymentBuilder(k8sClient.Scheme(), wgTestImage, corev1.PullIfNotPresent).
 				ForWireguard(owner)
 			Expect(err).ShouldNot(HaveOccurred())
@@ -1742,23 +1746,19 @@ var _ = Describe("wireguard controller", func() {
 				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
 					return err
 				}
-				wg.Spec.Tunnel.Enabled = false
+				wg.Spec.Tolerations = nil
 				return k8sClient.Update(context.Background(), wg)
 			}, Timeout, Interval).Should(Succeed())
 
 			// The proof that adoption is complete. Without the legacy-manager migration in
-			// applyOwned, "manager" still co-owns the sidecar and the apiserver never prunes it.
-			Eventually(func() []string {
+			// applyOwned, "manager" still co-owns the toleration and the apiserver never prunes it.
+			Eventually(func() []corev1.Toleration {
 				dep := &appsv1.Deployment{}
 				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
-					return nil
+					return []corev1.Toleration{{Key: "get-failed"}}
 				}
-				var names []string
-				for _, c := range dep.Spec.Template.Spec.Containers {
-					names = append(names, c.Name)
-				}
-				return names
-			}, Timeout, Interval).Should(Equal([]string{"agent"}), "the legacy-owned wstunnel sidecar must be removed")
+				return dep.Spec.Template.Spec.Tolerations
+			}, Timeout, Interval).Should(BeEmpty(), "the legacy-owned toleration must be removed")
 
 			removed := &appsv1.Deployment{}
 			Expect(k8sClient.Get(context.Background(), deploymentKey, removed)).Should(Succeed())
@@ -1934,23 +1934,6 @@ var _ = Describe("wireguard controller", func() {
 			}, Timeout, Interval).Should(Equal([]string{"PersistentKeepalive = 15"}))
 		})
 
-		It("renders keepalive in the tunnel and dual-mode direct configs", func() {
-			peerName := createWireguardWithPeer(v1alpha1.WireguardSpec{
-				Tunnel: v1alpha1.TunnelSpec{Enabled: true, DualMode: true},
-			})
-
-			// Dual mode stores the direct config under the peer name and the
-			// wstunnel config under "<peer>.tunnel". Both are separate templates,
-			// so both need asserting.
-			Eventually(func() []string {
-				return peerConfigLines(wgName, wgNamespace, peerName, "PersistentKeepalive")
-			}, Timeout, Interval).Should(Equal([]string{"PersistentKeepalive = 25"}))
-
-			Eventually(func() []string {
-				return peerConfigLines(wgName, wgNamespace, peerName+".tunnel", "PersistentKeepalive")
-			}, Timeout, Interval).Should(Equal([]string{"PersistentKeepalive = 25"}))
-		})
-
 		It("omits PersistentKeepalive entirely when set to 0", func() {
 			keepalive := int32(0)
 			peerName := createWireguardWithPeer(v1alpha1.WireguardSpec{PersistentKeepalive: &keepalive})
@@ -1962,281 +1945,6 @@ var _ = Describe("wireguard controller", func() {
 			}, Timeout, Interval).Should(HaveLen(1))
 
 			Expect(peerConfigLines(wgName, wgNamespace, peerName, "PersistentKeepalive")).To(BeEmpty())
-		})
-	})
-
-	Context("Tunnel", func() {
-		It("should add wstunnel sidecar and TCP service when tunnel is enabled", func() {
-			expectedAddress := "test-tunnel-address"
-			var expectedNodePort = "30000"
-			var tunnelPort int32 = 8443
-
-			wgServer := &v1alpha1.Wireguard{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      wgKey.Name,
-					Namespace: wgKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardSpec{
-					ServiceType: corev1.ServiceTypeNodePort,
-					Address:     expectedAddress,
-					Tunnel: v1alpha1.TunnelSpec{
-						Enabled: true,
-						Port:    tunnelPort,
-					},
-				},
-			}
-			Expect(k8sClient.Create(context.Background(), wgServer)).Should(Succeed())
-
-			// Create a peer
-			wgPeerKey := types.NamespacedName{
-				Name:      wgName + "-peer1",
-				Namespace: wgNamespace,
-			}
-			wgPeer := &v1alpha1.WireguardPeer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      wgPeerKey.Name,
-					Namespace: wgPeerKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardPeerSpec{
-					WireguardRef: wgName,
-				},
-			}
-			Expect(k8sClient.Create(context.Background(), wgPeer)).Should(Succeed())
-
-			// Wait for service to be created
-			serviceKey := types.NamespacedName{
-				Namespace: wgKey.Namespace,
-				Name:      wgKey.Name + "-svc",
-			}
-
-			// Verify service uses TCP and the tunnel port
-			Eventually(func() corev1.Protocol {
-				svc := &corev1.Service{}
-				err := k8sClient.Get(context.Background(), serviceKey, svc)
-				if err != nil || len(svc.Spec.Ports) == 0 {
-					return ""
-				}
-				return svc.Spec.Ports[0].Protocol
-			}, Timeout, Interval).Should(Equal(corev1.ProtocolTCP))
-
-			Eventually(func() int32 {
-				svc := &corev1.Service{}
-				err := k8sClient.Get(context.Background(), serviceKey, svc)
-				if err != nil || len(svc.Spec.Ports) == 0 {
-					return 0
-				}
-				return svc.Spec.Ports[0].Port
-			}, Timeout, Interval).Should(Equal(tunnelPort))
-
-			// Reconcile NodePort so the controller can proceed
-			Expect(reconcileServiceWithTypeNodePort(serviceKey, expectedNodePort, tunnelPort)).Should(Succeed())
-
-			// Verify deployment has wstunnel sidecar
-			depKey := types.NamespacedName{
-				Namespace: wgKey.Namespace,
-				Name:      wgKey.Name + "-dep",
-			}
-			Eventually(func() bool {
-				dep := &appsv1.Deployment{}
-				err := k8sClient.Get(context.Background(), depKey, dep)
-				if err != nil {
-					return false
-				}
-				for _, c := range dep.Spec.Template.Spec.Containers {
-					if c.Name == "wstunnel" {
-						return true
-					}
-				}
-				return false
-			}, Timeout, Interval).Should(BeTrue())
-
-			// Verify wstunnel container has correct command
-			Eventually(func() []string {
-				dep := &appsv1.Deployment{}
-				err := k8sClient.Get(context.Background(), depKey, dep)
-				if err != nil {
-					return nil
-				}
-				for _, c := range dep.Spec.Template.Spec.Containers {
-					if c.Name == "wstunnel" {
-						return c.Command
-					}
-				}
-				return nil
-			}, Timeout, Interval).Should(Equal([]string{
-				"/usr/bin/dumb-init", "--",
-				"/home/app/wstunnel", "server",
-				"--restrict-to", "127.0.0.1:51820",
-				fmt.Sprintf("wss://0.0.0.0:%d", tunnelPort),
-			}))
-
-			// Verify peer config has PreUp with wstunnel client and Endpoint = 127.0.0.1:51820
-			Eventually(func() string {
-				secret := &corev1.Secret{}
-				err := k8sClient.Get(context.Background(), types.NamespacedName{Name: wgName + "-peer-configs", Namespace: wgNamespace}, secret)
-				if err != nil {
-					return ""
-				}
-				return string(secret.Data[wgName+"-peer1"])
-			}, Timeout, Interval).Should(And(
-				ContainSubstring("Endpoint = 127.0.0.1:51820"),
-				ContainSubstring(fmt.Sprintf("PreUp = wstunnel client -L udp://127.0.0.1:51820:127.0.0.1:51820 wss://%s:%d &", expectedAddress, tunnelPort)),
-				ContainSubstring("PostDown = killall wstunnel || true"),
-			))
-		})
-
-		It("should expose both UDP and TCP ports in dualMode", func() {
-			expectedAddress := "test-dual-address"
-			var expectedNodePort = "30000"
-			var tunnelPort int32 = 8443
-
-			wgServer := &v1alpha1.Wireguard{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      wgKey.Name,
-					Namespace: wgKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardSpec{
-					ServiceType: corev1.ServiceTypeNodePort,
-					Address:     expectedAddress,
-					Tunnel: v1alpha1.TunnelSpec{
-						Enabled:  true,
-						Port:     tunnelPort,
-						DualMode: true,
-					},
-				},
-			}
-			Expect(k8sClient.Create(context.Background(), wgServer)).Should(Succeed())
-
-			wgPeerKey := types.NamespacedName{
-				Name:      wgName + "-peer1",
-				Namespace: wgNamespace,
-			}
-			wgPeer := &v1alpha1.WireguardPeer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      wgPeerKey.Name,
-					Namespace: wgPeerKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardPeerSpec{
-					WireguardRef: wgName,
-				},
-			}
-			Expect(k8sClient.Create(context.Background(), wgPeer)).Should(Succeed())
-
-			serviceKey := types.NamespacedName{
-				Namespace: wgKey.Namespace,
-				Name:      wgKey.Name + "-svc",
-			}
-
-			// Verify service has two ports (UDP wireguard + TCP tunnel)
-			Eventually(func() int {
-				svc := &corev1.Service{}
-				err := k8sClient.Get(context.Background(), serviceKey, svc)
-				if err != nil {
-					return 0
-				}
-				return len(svc.Spec.Ports)
-			}, Timeout, Interval).Should(Equal(2))
-
-			Eventually(func() []string {
-				svc := &corev1.Service{}
-				err := k8sClient.Get(context.Background(), serviceKey, svc)
-				if err != nil || len(svc.Spec.Ports) < 2 {
-					return nil
-				}
-				return []string{
-					svc.Spec.Ports[0].Name,
-					string(svc.Spec.Ports[0].Protocol),
-					svc.Spec.Ports[1].Name,
-					string(svc.Spec.Ports[1].Protocol),
-				}
-			}, Timeout, Interval).Should(Equal([]string{
-				"wireguard", "UDP",
-				"tunnel", "TCP",
-			}))
-
-			Expect(reconcileServiceWithTypeNodePort(serviceKey, expectedNodePort, 51820)).Should(Succeed())
-
-			// Verify peer config has both direct and tunnel variants
-			Eventually(func() bool {
-				secret := &corev1.Secret{}
-				err := k8sClient.Get(context.Background(), types.NamespacedName{Name: wgName + "-peer-configs", Namespace: wgNamespace}, secret)
-				if err != nil {
-					return false
-				}
-				_, hasDirect := secret.Data[wgName+"-peer1"]
-				_, hasTunnel := secret.Data[wgName+"-peer1.tunnel"]
-				return hasDirect && hasTunnel
-			}, Timeout, Interval).Should(BeTrue())
-
-			// Direct config should have regular endpoint
-			Eventually(func() string {
-				secret := &corev1.Secret{}
-				err := k8sClient.Get(context.Background(), types.NamespacedName{Name: wgName + "-peer-configs", Namespace: wgNamespace}, secret)
-				if err != nil {
-					return ""
-				}
-				return string(secret.Data[wgName+"-peer1"])
-			}, Timeout, Interval).Should(And(
-				ContainSubstring(fmt.Sprintf("Endpoint = %s:", expectedAddress)),
-				Not(ContainSubstring("PreUp")),
-			))
-
-			// Tunnel config should have PreUp and localhost endpoint
-			Eventually(func() string {
-				secret := &corev1.Secret{}
-				err := k8sClient.Get(context.Background(), types.NamespacedName{Name: wgName + "-peer-configs", Namespace: wgNamespace}, secret)
-				if err != nil {
-					return ""
-				}
-				return string(secret.Data[wgName+"-peer1.tunnel"])
-			}, Timeout, Interval).Should(And(
-				ContainSubstring("Endpoint = 127.0.0.1:51820"),
-				ContainSubstring("PreUp = wstunnel client"),
-				ContainSubstring("PostDown = killall wstunnel"),
-			))
-		})
-
-		It("removes the wstunnel sidecar when the tunnel is disabled again", func() {
-			created := &v1alpha1.Wireguard{
-				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
-			}
-			created.Spec.Tunnel.Enabled = true
-			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
-
-			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
-			// See reconcileServiceWithTypeLoadBalancer: wait for the Service, then call it once.
-			Eventually(func() error {
-				return k8sClient.Get(context.Background(), serviceKey, &corev1.Service{})
-			}, Timeout, Interval).Should(Succeed())
-			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, "localhost")).Should(Succeed())
-
-			deploymentKey := types.NamespacedName{Name: wgName + "-dep", Namespace: wgNamespace}
-			Eventually(func() int {
-				dep := &appsv1.Deployment{}
-				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
-					return -1
-				}
-				return len(dep.Spec.Template.Spec.Containers)
-			}, Timeout, Interval).Should(Equal(2), "wstunnel sidecar should be present")
-
-			Eventually(func() error {
-				wg := &v1alpha1.Wireguard{}
-				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
-					return err
-				}
-				wg.Spec.Tunnel.Enabled = false
-				return k8sClient.Update(context.Background(), wg)
-			}, Timeout, Interval).Should(Succeed())
-
-			// This is the case equality.Semantic.DeepDerivative cannot detect: a desired list
-			// shorter than the actual one is reported as "no change needed".
-			Eventually(func() int {
-				dep := &appsv1.Deployment{}
-				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
-					return -1
-				}
-				return len(dep.Spec.Template.Spec.Containers)
-			}, Timeout, Interval).Should(Equal(1), "wstunnel sidecar should be removed")
 		})
 	})
 

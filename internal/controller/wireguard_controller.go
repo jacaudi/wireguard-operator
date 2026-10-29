@@ -336,50 +336,14 @@ DNS = %s`, strings.TrimSpace(string(v)), addressLine, dnsConfiguration)
 				if serverMtu != "" {
 					pureCfg = pureCfg + "\nMTU = " + serverMtu
 				}
-				if wireguard.Spec.Tunnel.Enabled {
-					tunnelPort := wireguard.Spec.Tunnel.Port
-					if tunnelPort == 0 {
-						tunnelPort = resources.DefaultTunnelPort
-					}
-
-					// Tunnel config with PreUp/PostDown hooks
-					tunnelCfg := pureCfg + fmt.Sprintf(`
-PreUp = wstunnel client -L udp://127.0.0.1:%d:127.0.0.1:%d wss://%s:%d &
-PostDown = killall wstunnel || true
-
-[Peer]
-PublicKey = %s
-AllowedIPs = %s
-Endpoint = 127.0.0.1:%d
-%s`, resources.WireguardPort, resources.WireguardPort, serverAddress, tunnelPort, serverPublicKey, allowIps, resources.WireguardPort, keepaliveLine)
-
-					if wireguard.Spec.Tunnel.DualMode {
-						// In dual mode, store both configs:
-						// <peer> = direct config (connects via WireGuard UDP)
-						// <peer>.tunnel = tunnel config (connects via wstunnel)
-						directCfg := pureCfg + fmt.Sprintf(`
+				pureCfg += fmt.Sprintf(`
 
 [Peer]
 PublicKey = %s
 AllowedIPs = %s
 Endpoint = %s:%s
 %s`, serverPublicKey, allowIps, serverAddress, wireguard.Status.Port, keepaliveLine)
-						newPeerCfgData[peer.Name] = []byte(directCfg)
-						newPeerCfgData[peer.Name+".tunnel"] = []byte(tunnelCfg)
-					} else {
-						// Tunnel-only: the main config uses the tunnel
-						newPeerCfgData[peer.Name] = []byte(tunnelCfg)
-					}
-				} else {
-					pureCfg = pureCfg + fmt.Sprintf(`
-
-[Peer]
-PublicKey = %s
-AllowedIPs = %s
-Endpoint = %s:%s
-%s`, serverPublicKey, allowIps, serverAddress, wireguard.Status.Port, keepaliveLine)
-					newPeerCfgData[peer.Name] = []byte(pureCfg)
-				}
+				newPeerCfgData[peer.Name] = []byte(pureCfg)
 			}
 		}
 		if peer.Status.Status != v1alpha1.Ready {
@@ -552,15 +516,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		address = wireguard.Spec.Address
 	}
 
-	// Compute the effective external port (tunnel port when enabled, WG port otherwise)
 	var port = fmt.Sprintf("%d", resources.WireguardPort)
-	if wireguard.Spec.Tunnel.Enabled {
-		tp := wireguard.Spec.Tunnel.Port
-		if tp == 0 {
-			tp = resources.DefaultTunnelPort
-		}
-		port = fmt.Sprintf("%d", tp)
-	}
 
 	if serviceType == corev1.ServiceTypeLoadBalancer {
 		ingressList := svcFound.Status.LoadBalancer.Ingress
@@ -835,20 +791,8 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		resourcesStatus = append(resourcesStatus, v1alpha1.Resource{Name: desiredDep.Name, Type: "Deployment", Status: depStatus, Image: depImage})
 
-		// Compute tunnel status
-		tunnelStatus := "disabled"
-		if wireguard.Spec.Tunnel.Enabled {
-			tunnelStatus = wireguard.Spec.Tunnel.Type
-			if tunnelStatus == "" {
-				tunnelStatus = "wstunnel"
-			}
-		}
-
 		// Update status if changed
 		needUpdate := false
-		if wireguard.Status.Tunnel != tunnelStatus {
-			needUpdate = true
-		}
 		if wireguard.Status.UniqueIdentifier != uniqueIdentifier {
 			needUpdate = true
 		}
@@ -865,7 +809,6 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if needUpdate {
 			latest := &v1alpha1.Wireguard{}
 			if err := r.Get(ctx, req.NamespacedName, latest); err == nil {
-				latest.Status.Tunnel = tunnelStatus
 				latest.Status.UniqueIdentifier = uniqueIdentifier
 				latest.Status.Resources = resourcesStatus
 				if err := r.Status().Update(ctx, latest); err != nil {

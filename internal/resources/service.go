@@ -27,8 +27,6 @@ import (
 const (
 	// WireguardPort is the default port for Wireguard VPN.
 	WireguardPort = 51820
-	// DefaultTunnelPort is the default port for the wstunnel sidecar.
-	DefaultTunnelPort = 443
 )
 
 // ServiceBuilder builds services for wireguard resources.
@@ -52,24 +50,6 @@ func (b *ServiceBuilder) ForWireguard(wg *v1alpha1.Wireguard, serviceType corev1
 		Port:       WireguardPort,
 		TargetPort: intstr.FromInt(WireguardPort),
 	}}
-
-	if wg.Spec.Tunnel.Enabled {
-		tunnelPort := wg.Spec.Tunnel.Port
-		if tunnelPort == 0 {
-			tunnelPort = DefaultTunnelPort
-		}
-		tunnelSvcPort := corev1.ServicePort{
-			Name:       "tunnel",
-			Protocol:   corev1.ProtocolTCP,
-			Port:       tunnelPort,
-			TargetPort: intstr.FromInt(int(tunnelPort)),
-		}
-		if wg.Spec.Tunnel.DualMode {
-			svcPorts = append(svcPorts, tunnelSvcPort)
-		} else {
-			svcPorts = []corev1.ServicePort{tunnelSvcPort}
-		}
-	}
 
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
