@@ -91,6 +91,36 @@ func TestGetDesiredStateDecodesState(t *testing.T) {
 	}
 }
 
+func TestIsStateValidNeedsNoServerAddressOrDNS(t *testing.T) {
+	// A ClusterIP server has no external address and pushes no DNS, so a state whose
+	// server status carries neither must still be applied.
+	state := State{ServerPrivateKey: "PLA+byaz6a5jbnioieB4NEELG7sdq7Wk+3u9Kw0s6zk="}
+	if err := IsStateValid(state); err != nil {
+		t.Errorf("IsStateValid(state without address or DNS) = %v, want nil", err)
+	}
+}
+
+func TestIsStateValidAcceptsAStateWrittenBeforeTheTrim(t *testing.T) {
+	// During a rollout the new agent can read a state.json written by an operator that still
+	// rendered the deleted fields. Unknown fields must be ignored, not rejected.
+	const legacy = `{"Server":{"spec":{"mtu":"1380","serviceType":"LoadBalancer","dns":"1.1.1.1"},` +
+		`"status":{"address":"203.0.113.10","dns":"10.0.0.10","port":"51820"}},` +
+		`"ServerPrivateKey":"PLA+byaz6a5jbnioieB4NEELG7sdq7Wk+3u9Kw0s6zk=",` +
+		`"Peers":[{"spec":{"address":"10.8.0.2","publicKey":"v5Q+oRNBfxafhiAR9bXGEhRsRFfEFb7XsFV8DWGrykQ=",` +
+		`"wireguardRef":"vpn","privateKeyRef":{"secretKeyRef":{"name":"p","key":"privateKey"}}}}]}`
+
+	state, _, err := GetDesiredState(writeState(t, legacy))
+	if err != nil {
+		t.Fatalf("GetDesiredState(pre-trim state): %v", err)
+	}
+	if err := IsStateValid(state); err != nil {
+		t.Errorf("IsStateValid(pre-trim state) = %v, want nil", err)
+	}
+	if len(state.Peers) != 1 || state.Peers[0].Spec.Address != "10.8.0.2" {
+		t.Errorf("peers = %+v, want the single pre-trim peer at 10.8.0.2", state.Peers)
+	}
+}
+
 func TestGetDesiredStateReportsMissingFile(t *testing.T) {
 	if _, _, err := GetDesiredState(filepath.Join(t.TempDir(), "absent.json")); err == nil {
 		t.Error("expected an error for a missing state file, got nil")

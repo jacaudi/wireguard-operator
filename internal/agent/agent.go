@@ -30,14 +30,6 @@ func IsStateValid(state State) error {
 		return fmt.Errorf("server private key should be of length 44")
 	}
 
-	if state.Server.Status.Address == "" {
-		return fmt.Errorf("server address is not defined")
-	}
-
-	if state.Server.Status.Dns == "" {
-		return fmt.Errorf("dns is not defined")
-	}
-
 	for i, peer := range state.Peers {
 		if peer.Spec.Address == "" {
 			return fmt.Errorf("peer with index %d does not have the address defined", i)

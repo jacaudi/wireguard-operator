@@ -114,14 +114,6 @@ spec:
                         type: object
                     type: object
                 type: object
-              dns:
-                description: A string field that specifies the DNS server(s) to be
-                  used by the peers.
-                type: string
-              dnsSearchDomain:
-                description: A string field that specifies the DNS search domain(s)
-                  to be used by the peers.
-                type: string
               enableIpForwardOnPodInit:
                 description: A boolean field that specifies whether IP forwarding
                   should be enabled on the Wireguard VPN pod at startup. This can
@@ -133,10 +125,6 @@ spec:
                   A string field that specifies the external address where peers should connect to this Wireguard instance.
                   When set, this is used for peer endpoints instead of Address or Service status.
                 type: string
-              mtu:
-                description: A string field that specifies the maximum transmission
-                  unit (MTU) size for Wireguard packets for all peers.
-                type: string
               nodeSelector:
                 additionalProperties:
                   type: string
@@ -146,17 +134,6 @@ spec:
                   PeerCIDR is the IPv4 CIDR range from which Wireguard peer addresses will be allocated.
                   If omitted, the operator will default to 10.8.0.0/24.
                 type: string
-              persistentKeepalive:
-                default: 25
-                description: |-
-                  PersistentKeepalive is the interval in seconds at which peers send keepalive packets
-                  to the server. This keeps NAT and conntrack entries alive so the server can reach the
-                  peer, and makes the peer re-handshake promptly after the server pod is rescheduled.
-                  Set to 0 to disable. Defaults to 25.
-                format: int32
-                maximum: 65535
-                minimum: 0
-                type: integer
               port:
                 description: A field that specifies the value to use for a nodePort
                   ServiceType
@@ -285,8 +262,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              dns:
-                type: string
               message:
                 description: A string field that provides additional information about
                   the status of Wireguard. This could include error messages or other

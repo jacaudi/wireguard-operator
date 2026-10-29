@@ -4,4 +4,6 @@ metadata:
   name: peer20
 spec:
   wireguardRef: "vpn"
+  # The public half of a key the client generated itself: wg genkey | wg pubkey
+  publicKey: "v5Q+oRNBfxafhiAR9bXGEhRsRFfEFb7XsFV8DWGrykQ="
 

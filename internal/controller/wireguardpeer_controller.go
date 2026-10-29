@@ -21,10 +21,7 @@ import (
 	"fmt"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
-	"github.com/jacaudi/wireguard-operator/internal/resources"
 
-	wgtypes "golang.zx2c4.com/wireguard/wgctrl/wgtypes"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -38,8 +35,6 @@ import (
 type WireguardPeerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-
-	secretBuilder *resources.SecretBuilder
 }
 
 func (r *WireguardPeerReconciler) updateStatus(ctx context.Context, peer *v1alpha1.WireguardPeer, status string, message string) error {
@@ -86,12 +81,6 @@ func (r *WireguardPeerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	key, err := wgtypes.GeneratePrivateKey()
-	if err != nil {
-		log.Error(err, "Failed to generate private key")
-		return ctrl.Result{}, err
-	}
-
 	newPeer := peer.DeepCopy()
 	if newPeer.Status.Status == "" {
 		err = r.updateStatus(ctx, newPeer, v1alpha1.Pending, "Waiting for wireguard peer to be created")
@@ -101,55 +90,6 @@ func (r *WireguardPeerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		return ctrl.Result{Requeue: true}, nil
-	}
-
-	if peer.Spec.PublicKey == "" {
-		secretName := peer.Name + "-peer"
-		existingSecret := &corev1.Secret{}
-		var publicKey string
-
-		err = r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: peer.Namespace}, existingSecret)
-		if err == nil {
-			// Secret already exists (previous attempt created it but the spec
-			// update was lost due to a conflict). Reuse the existing keys.
-			log.Info("Secret already exists, reusing existing keys", "secret.Name", secretName)
-			publicKey = string(existingSecret.Data["publicKey"])
-		} else if errors.IsNotFound(err) {
-			// Secret does not exist yet — generate new keys and create it.
-			publicKey = key.PublicKey().String()
-
-			secret, buildErr := r.secretBuilder.ForPeer(peer, key.String(), publicKey)
-			if buildErr != nil {
-				log.Error(buildErr, "Failed to build peer secret", "secret.Name", secretName)
-				return ctrl.Result{}, buildErr
-			}
-			log.Info("Creating a new secret", "secret.Namespace", secret.Namespace, "secret.Name", secret.Name)
-			if err = r.Create(ctx, secret); err != nil {
-				log.Error(err, "Failed to create new secret", "secret.Namespace", secret.Namespace, "secret.Name", secret.Name)
-				return ctrl.Result{}, err
-			}
-		} else {
-			log.Error(err, "Failed to check for existing secret", "secret.Name", secretName)
-			return ctrl.Result{}, err
-		}
-
-		// Use a merge patch to set only the key fields. Unlike Update(),
-		// a patch doesn't send the full object and won't conflict with
-		// concurrent updates to other fields (e.g. address allocation by
-		// the Wireguard controller).
-		patchBase := client.MergeFrom(peer.DeepCopy())
-		peer.Spec.PublicKey = publicKey
-		peer.Spec.PrivateKey = v1alpha1.PrivateKey{
-			SecretKeyRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "privateKey"}}
-		err = r.Patch(ctx, peer, patchBase)
-
-		if err != nil {
-			log.Error(err, "Failed to update peer with keys", "peer.Name", peer.Name)
-			return ctrl.Result{}, err
-		}
-
-		return ctrl.Result{Requeue: true}, nil
-
 	}
 
 	wireguard := &v1alpha1.Wireguard{}
@@ -194,9 +134,6 @@ func (r *WireguardPeerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	wireguardSecret := &corev1.Secret{}
-	_ = r.Get(ctx, types.NamespacedName{Name: newPeer.Spec.WireguardRef, Namespace: newPeer.Namespace}, wireguardSecret)
-
 	if len(newPeer.OwnerReferences) == 0 {
 		log.Info("Waiting for owner reference to be set " + wireguard.Name + " " + newPeer.Name)
 		patchBase := client.MergeFrom(newPeer.DeepCopy())
@@ -212,8 +149,6 @@ func (r *WireguardPeerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		return ctrl.Result{Requeue: true}, nil
 	}
-
-	// No longer wait for a config in status; peer configs are stored in a Secret
 
 	return ctrl.Result{}, nil
 }
@@ -243,8 +178,6 @@ func (r *WireguardPeerReconciler) checkDuplicateAddress(ctx context.Context, nam
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WireguardPeerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.secretBuilder = resources.NewSecretBuilder(r.Scheme)
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.WireguardPeer{}).
 		Complete(r)
