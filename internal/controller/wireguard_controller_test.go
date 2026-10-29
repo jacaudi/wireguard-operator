@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -60,6 +61,7 @@ func reconcileServiceWithTypeNodePort(svcKey client.ObjectKey, nodePort string, 
 	}
 	return k8sClient.Update(context.Background(), svc)
 }
+
 // reconcileServiceWithTypeLoadBalancer asserts internally with a bare Expect, so it must NOT be
 // wrapped in Eventually -- on the first poll, before the operator has created the Service, that
 // Expect calls the Ginkgo fail handler and aborts the spec rather than returning an error to
@@ -1326,6 +1328,56 @@ var _ = Describe("wireguard controller", func() {
 				}
 				return dep.Spec.Template.Spec.Tolerations
 			}, Timeout, Interval).Should(BeEmpty())
+		})
+
+		It("converges a spec field that never had a bespoke drift check", func() {
+			created := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			}
+			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
+
+			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
+			// See reconcileServiceWithTypeLoadBalancer: wait for the Service, then call it once.
+			Eventually(func() error {
+				return k8sClient.Get(context.Background(), serviceKey, &corev1.Service{})
+			}, Timeout, Interval).Should(Succeed())
+			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, "localhost")).Should(Succeed())
+
+			deploymentKey := types.NamespacedName{Name: wgName + "-dep", Namespace: wgNamespace}
+			Eventually(func() error {
+				dep := &appsv1.Deployment{}
+				return k8sClient.Get(context.Background(), deploymentKey, dep)
+			}, Timeout, Interval).Should(Succeed())
+
+			// Set a field with no drift check in the pre-change controller.
+			Eventually(func() error {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return err
+				}
+				wg.Spec.Agent.Resources = corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("123Mi"),
+					},
+				}
+				return k8sClient.Update(context.Background(), wg)
+			}, Timeout, Interval).Should(Succeed())
+
+			Eventually(func() string {
+				dep := &appsv1.Deployment{}
+				if err := k8sClient.Get(context.Background(), deploymentKey, dep); err != nil {
+					return "get-failed"
+				}
+				for _, c := range dep.Spec.Template.Spec.Containers {
+					if c.Name == "agent" {
+						if q, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+							return q.String()
+						}
+						return "unset"
+					}
+				}
+				return "no-agent-container"
+			}, Timeout, Interval).Should(Equal("123Mi"))
 		})
 
 		It("rejects a peer with a duplicate address on the same wireguardRef", func() {
