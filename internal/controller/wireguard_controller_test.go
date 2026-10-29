@@ -1380,6 +1380,49 @@ var _ = Describe("wireguard controller", func() {
 			}, Timeout, Interval).Should(Equal("123Mi"))
 		})
 
+		It("removes a service annotation the user has deleted from the spec", func() {
+			created := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			}
+			created.Spec.ServiceAnnotations = map[string]string{
+				"probe.test/keep":   "yes",
+				"probe.test/remove": "please",
+			}
+			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
+
+			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
+			Eventually(func() bool {
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
+					return false
+				}
+				_, ok := svc.Annotations["probe.test/remove"]
+				return ok
+			}, Timeout, Interval).Should(BeTrue(), "annotation should be present after create")
+
+			Eventually(func() error {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return err
+				}
+				wg.Spec.ServiceAnnotations = map[string]string{"probe.test/keep": "yes"}
+				return k8sClient.Update(context.Background(), wg)
+			}, Timeout, Interval).Should(Succeed())
+
+			Eventually(func() bool {
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
+					return true
+				}
+				_, stillThere := svc.Annotations["probe.test/remove"]
+				return stillThere
+			}, Timeout, Interval).Should(BeFalse(), "removed annotation should be dropped from the Service")
+
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(context.Background(), serviceKey, svc)).Should(Succeed())
+			Expect(svc.Annotations).Should(HaveKeyWithValue("probe.test/keep", "yes"))
+		})
+
 		It("rejects a peer with a duplicate address on the same wireguardRef", func() {
 			wgServer := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{
