@@ -30,22 +30,9 @@ const (
 
 // WireguardSpec defines the desired state of Wireguard
 type WireguardSpec struct {
-	// A string field that specifies the address for the Wireguard Service.
-	// When ServiceType is LoadBalancer, this can be used to request a fixed Service IP.
-	// If ExternalAddress is not set, this value is also used as the peer endpoint.
-	Address string `json:"address,omitempty"`
-	// A string field that specifies the external address where peers should connect to this Wireguard instance.
-	// When set, this is used for peer endpoints instead of Address or Service status.
-	ExternalAddress string `json:"externalAddress,omitempty"`
 	// PeerCIDR is the IPv4 CIDR range from which Wireguard peer addresses will be allocated.
 	// If omitted, the operator will default to 10.8.0.0/24.
 	PeerCIDR string `json:"peerCIDR,omitempty"`
-	// A field that specifies the type of Kubernetes service that should be used for the Wireguard VPN. This could be ClusterIP, NodePort or LoadBalancer, depending on the needs of the deployment.
-	ServiceType corev1.ServiceType `json:"serviceType,omitempty"`
-	// A field that specifies the value to use for a nodePort ServiceType
-	NodePort int32 `json:"port,omitempty"`
-	// A map of key value strings for service annotations
-	ServiceAnnotations map[string]string `json:"serviceAnnotations,omitempty"`
 	// A boolean field that specifies whether IP forwarding should be enabled on the Wireguard VPN pod at startup. This can be useful to enable if the peers are having problems with sending traffic to the internet.
 	EnableIpForwardOnPodInit bool `json:"enableIpForwardOnPodInit,omitempty"`
 	// A boolean field that specifies whether to use the userspace implementation of Wireguard instead of the kernel one.
@@ -63,18 +50,10 @@ type WireguardPodSpec struct {
 
 // WireguardStatus defines the observed state of Wireguard
 type WireguardStatus struct {
-	// A string field that specifies the address for the Wireguard VPN server that is currently being used.
-	Address string `json:"address,omitempty"`
-	// A string field that specifies the port for the Wireguard VPN server that is currently being used.
-	Port string `json:"port,omitempty"`
 	// A string field that represents the current status of Wireguard. This could include values like ready, pending, or error.
 	Status string `json:"status,omitempty"`
 	// A string field that provides additional information about the status of Wireguard. This could include error messages or other information that helps to diagnose issues with the wg instance.
 	Message string `json:"message,omitempty"`
-	// A stable identifier for the Wireguard instance (e.g., server public key).
-	UniqueIdentifier string `json:"uniqueIdentifier,omitempty"`
-	// Resource-level status information for associated Kubernetes resources.
-	Resources []Resource `json:"resources,omitempty"`
 	// Conditions represent the latest available observations of the Wireguard's state.
 	// +optional
 	// +patchMergeKey=type
@@ -84,22 +63,9 @@ type WireguardStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
-// Resource describes the observed state of a related Kubernetes resource.
-type Resource struct {
-	// The resource name (e.g., my-wg-dep, my-wg-svc).
-	Name string `json:"name,omitempty"`
-	// The resource type (e.g., Deployment, Service, ConfigMap, Secret).
-	Type string `json:"type,omitempty"`
-	// A short status string (e.g., Ready, Pending, Error).
-	Status string `json:"status,omitempty"`
-	// The container image when applicable (e.g., for Deployments).
-	Image string `json:"image,omitempty"`
-}
-
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.status`
-//+kubebuilder:printcolumn:name="Address",type=string,JSONPath=`.status.address`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // Wireguard is the Schema for the wireguards API

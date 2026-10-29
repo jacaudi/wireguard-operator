@@ -117,7 +117,6 @@ var _ = Describe("no update churn", func() {
 		wg := &v1alpha1.Wireguard{
 			ObjectMeta: metav1.ObjectMeta{Name: churnName, Namespace: churnNS},
 		}
-		wg.Spec.ServiceType = corev1.ServiceTypeClusterIP
 		Expect(k8sClient.Create(context.Background(), wg)).Should(Succeed())
 		defer func() {
 			_ = k8sClient.Delete(context.Background(), wg)

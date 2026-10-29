@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
@@ -21,85 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-// test helpers
-
-func createNode(address string) error {
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: address,
-		}}
-
-	err := k8sClient.Create(context.Background(), node)
-	if err != nil {
-		return err
-	}
-
-	node.Status.Addresses = []corev1.NodeAddress{
-		{
-			Type:    corev1.NodeExternalIP,
-			Address: address,
-		},
-	}
-	return k8sClient.Status().Update(context.Background(), node)
-}
-
-func reconcileServiceWithTypeNodePort(svcKey client.ObjectKey, nodePort string, port int32) error {
-	// update NodePort service port, preserving existing port names and protocols
-	svc := &corev1.Service{}
-	Expect(k8sClient.Get(context.Background(), svcKey, svc)).Should(Succeed())
-	if svc.Spec.Type != corev1.ServiceTypeNodePort {
-		return fmt.Errorf("ReconcileServiceWithTypeNodePort only reconsiles NodePort services")
-	}
-
-	nodePortInteger, err := strconv.ParseInt(nodePort, 10, 32)
-	Expect(err).ToNot(HaveOccurred())
-
-	if len(svc.Spec.Ports) > 0 {
-		svc.Spec.Ports[0].NodePort = int32(nodePortInteger)
-		svc.Spec.Ports[0].Port = port
-		svc.Spec.Ports[0].TargetPort = intstr.FromInt(int(port))
-	}
-	return k8sClient.Update(context.Background(), svc)
-}
-
-// reconcileServiceWithTypeLoadBalancer asserts internally with a bare Expect, so it must NOT be
-// wrapped in Eventually -- on the first poll, before the operator has created the Service, that
-// Expect calls the Ginkgo fail handler and aborts the spec rather than returning an error to
-// retry. Callers must wait for the Service to exist first, then call this once.
-func reconcileServiceWithTypeLoadBalancer(svcKey client.ObjectKey, hostname string) error {
-	svc := &corev1.Service{}
-	Expect(k8sClient.Get(context.Background(), svcKey, svc)).Should(Succeed())
-	if svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
-		return fmt.Errorf("ReconcileServiceWithTypeLoadBalancer only reconsiles LoadBalancer services")
-	}
-
-	svc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{Hostname: hostname}}
-	return k8sClient.Status().Update(context.Background(), svc)
-}
-
-func reconcileServiceWithClusterIP(svcKey client.ObjectKey, port int32) error {
-	svc := &corev1.Service{}
-	Expect(k8sClient.Get(context.Background(), svcKey, svc)).Should(Succeed())
-
-	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
-		return fmt.Errorf("ReconcileServiceWithClusterIP only reconsiles ClusterIP services")
-	}
-
-	// Mutate in place, preserving existing port names and protocols. Service ports are an
-	// associative list keyed on BOTH port and protocol, so replacing the slice with an entry
-	// that has no name and no protocol creates a second, unnamed port rather than replacing
-	// the operator's — and a multi-port Service requires every port to be named.
-	// Mirrors reconcileServiceWithTypeNodePort above.
-	if len(svc.Spec.Ports) > 0 {
-		svc.Spec.Ports[0].Port = port
-		svc.Spec.Ports[0].TargetPort = intstr.FromInt32(port)
-	}
-	return k8sClient.Update(context.Background(), svc)
-}
 
 var _ = Describe("wireguard controller", func() {
 
@@ -164,7 +86,6 @@ var _ = Describe("wireguard controller", func() {
 		It("allocates an address to a publicKey peer and writes no client config", func() {
 			wgServer := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
-				Spec:       v1alpha1.WireguardSpec{ServiceType: corev1.ServiceTypeClusterIP},
 			}
 			Expect(k8sClient.Create(context.Background(), wgServer)).Should(Succeed())
 
@@ -263,12 +184,7 @@ var _ = Describe("wireguard controller", func() {
 			}, Timeout, Interval).Should(Equal(v1alpha1.Ready), "a peer that gains a key is admitted and its PublicKeyMissing condition cleared")
 		})
 
-		It("Should create a WG with ServiceType NodePort and WG peer successfully", func() {
-			var expectedNodePort = "30000"
-			expectedAddress := "69.0.0.2"
-			// create node with IP 69.0.0.2
-			Expect(createNode(expectedAddress)).Should(Succeed())
-
+		It("Should create a WG with a ClusterIP Service and WG peer successfully", func() {
 			wgKey := types.NamespacedName{
 				Name:      wgName,
 				Namespace: wgNamespace,
@@ -277,342 +193,6 @@ var _ = Describe("wireguard controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      wgKey.Name,
 					Namespace: wgKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardSpec{
-					ServiceType: corev1.ServiceTypeNodePort,
-				},
-			}
-			expectedLabels := map[string]string{"app": "wireguard", "instance": wgKey.Name}
-
-			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
-
-			serviceName := wgKey.Name + "-svc"
-			serviceKey := types.NamespacedName{
-				Namespace: wgKey.Namespace,
-				Name:      serviceName,
-			}
-
-			// match labels
-			Eventually(func() map[string]string {
-				svc := &corev1.Service{}
-				err := k8sClient.Get(context.Background(), serviceKey, svc)
-				if err != nil {
-					return map[string]string{}
-				}
-				return svc.Spec.Selector
-			}, Timeout, Interval).Should(BeEquivalentTo(expectedLabels))
-
-			// match service type
-			Eventually(func() corev1.ServiceType {
-				svc := &corev1.Service{}
-				err := k8sClient.Get(context.Background(), serviceKey, svc)
-				if err != nil {
-					return ""
-				}
-				return svc.Spec.Type
-			}, Timeout, Interval).Should(Equal(corev1.ServiceTypeNodePort))
-
-			Expect(reconcileServiceWithTypeNodePort(serviceKey, expectedNodePort, 51820)).Should(Succeed())
-
-			// check that wireguard resource got the right summary fields after the service is ready
-			wg := &v1alpha1.Wireguard{}
-			Eventually(func() []string {
-				err := k8sClient.Get(context.Background(), wgKey, wg)
-				if err != nil {
-					return []string{"", "", "", "", ""}
-				}
-				return []string{wg.Status.Address, wg.Status.Port, wg.Status.Status, wg.Status.Message}
-			}, Timeout, Interval).Should(Equal([]string{expectedAddress, expectedNodePort, "ready", "VPN is active!"}))
-
-			Eventually(func() string {
-				deploymentKey := types.NamespacedName{
-					Name:      wgName + "-dep",
-					Namespace: wgNamespace,
-				}
-				deployment := &appsv1.Deployment{}
-				Expect(k8sClient.Get(context.Background(), deploymentKey, deployment)).Should(Succeed())
-				Expect(len(deployment.Spec.Template.Spec.Containers)).Should(Equal(1))
-				return deployment.Spec.Template.Spec.Containers[0].Image
-			}, Timeout, Interval).Should(Equal(wgTestImage))
-
-			// create peer
-			peerKey := types.NamespacedName{
-				Name:      wgKey.Name + "peer",
-				Namespace: wgKey.Namespace,
-			}
-			peer := &v1alpha1.WireguardPeer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      peerKey.Name,
-					Namespace: peerKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardPeerSpec{
-					WireguardRef: wgKey.Name,
-					PublicKey:    newPublicKey(),
-				},
-			}
-			Expect(k8sClient.Create(context.Background(), peer)).Should(Succeed())
-
-			// get peer secret
-			wgSecretKeyName := types.NamespacedName{
-				Name:      wgKey.Name,
-				Namespace: wgKey.Namespace,
-			}
-			wgSecret := &corev1.Secret{}
-			Eventually(func() error {
-				return k8sClient.Get(context.Background(), wgSecretKeyName, wgSecret)
-			}, Timeout, Interval).Should(Succeed())
-			wgPublicKey := string(wgSecret.Data["publicKey"])
-
-			Eventually(func() string {
-				err := k8sClient.Get(context.Background(), peerKey, peer)
-				if err != nil {
-					return ""
-				}
-				return peer.Spec.Address
-			}, Timeout, Interval).Should(Equal("10.8.0.2"))
-
-			Eventually(func() v1alpha1.WireguardPeerStatus {
-				err := k8sClient.Get(context.Background(), peerKey, peer)
-				if err != nil {
-					return v1alpha1.WireguardPeerStatus{}
-				}
-				return peer.Status
-			}, Timeout, Interval).Should(Equal(v1alpha1.WireguardPeerStatus{
-				Status:  "ready",
-				Message: "Peer configured",
-			}))
-
-			// UniqueIdentifier should be set from the server secret publicKey
-			Eventually(func() string {
-				wg := &v1alpha1.Wireguard{}
-				_ = k8sClient.Get(context.Background(), wgKey, wg)
-				return wg.Status.UniqueIdentifier
-			}, Timeout, Interval).Should(Equal(wgPublicKey))
-
-			// Resources should include Service, ConfigMap, Secret, Deployment entries
-			Eventually(func() map[string]v1alpha1.Resource {
-				wg := &v1alpha1.Wireguard{}
-				_ = k8sClient.Get(context.Background(), wgKey, wg)
-				m := map[string]v1alpha1.Resource{}
-				for _, r := range wg.Status.Resources {
-					m[r.Type] = r
-				}
-				return m
-			}, Timeout, Interval).Should(SatisfyAll(
-				HaveKey("Service"),
-				HaveKey("ConfigMap"),
-				HaveKey("Secret"),
-				HaveKey("Deployment"),
-			))
-
-			// Deployment resource should report image
-			Eventually(func() string {
-				wg := &v1alpha1.Wireguard{}
-				_ = k8sClient.Get(context.Background(), wgKey, wg)
-				for _, r := range wg.Status.Resources {
-					if r.Type == "Deployment" {
-						return r.Image
-					}
-				}
-				return ""
-			}, Timeout, Interval).Should(Equal(wgTestImage))
-
-		})
-		It("Should create a WG with ServiceType LoadBalancer and WG peer successfully", func() {
-
-			wgKey := types.NamespacedName{
-				Name:      wgName,
-				Namespace: wgNamespace,
-			}
-			created := &v1alpha1.Wireguard{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      wgKey.Name,
-					Namespace: wgKey.Namespace,
-				},
-			}
-			expectedLabels := map[string]string{"app": "wireguard", "instance": wgKey.Name}
-
-			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
-
-			// service created
-			expectedExternalHostName := "test-host-name"
-			serviceName := wgKey.Name + "-svc"
-			serviceKey := types.NamespacedName{
-				Namespace: wgKey.Namespace,
-				Name:      serviceName,
-			}
-
-			// match labels
-			Eventually(func() map[string]string {
-				svc := &corev1.Service{}
-				err := k8sClient.Get(context.Background(), serviceKey, svc)
-				if err != nil {
-					return map[string]string{}
-				}
-				return svc.Spec.Selector
-			}, Timeout, Interval).Should(BeEquivalentTo(expectedLabels))
-
-			// match service type
-			Eventually(func() corev1.ServiceType {
-				svc := &corev1.Service{}
-				err := k8sClient.Get(context.Background(), serviceKey, svc)
-				if err != nil {
-					return ""
-				}
-				return svc.Spec.Type
-			}, Timeout, Interval).Should(Equal(corev1.ServiceTypeLoadBalancer))
-
-			Eventually(func() []string {
-				wg := &v1alpha1.Wireguard{}
-				_ = k8sClient.Get(context.Background(), wgKey, wg)
-				return []string{wg.Status.Address, wg.Status.Status, wg.Status.Message}
-			}, Timeout, Interval).Should(Equal([]string{"", "pending", "Waiting for service to be ready"}))
-
-			// Condition should reflect progressing
-			Eventually(func() string {
-				wg := &v1alpha1.Wireguard{}
-				_ = k8sClient.Get(context.Background(), wgKey, wg)
-				for _, c := range wg.Status.Conditions {
-					if c.Type == ConditionProgressing {
-						return c.Reason
-					}
-				}
-				return ""
-			}, Timeout, Interval).Should(Equal("ServiceNotReady"))
-
-			// update service external hostname
-			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, expectedExternalHostName)).Should(Succeed())
-
-			// check that wireguard resource got the right summary fields after the service is ready
-			wg := &v1alpha1.Wireguard{}
-			Eventually(func() []string {
-				err := k8sClient.Get(context.Background(), wgKey, wg)
-				if err != nil {
-					return []string{"", "", "", "", ""}
-				}
-				return []string{wg.Status.Address, wg.Status.Port, wg.Status.Status, wg.Status.Message}
-			}, Timeout, Interval).Should(Equal([]string{expectedExternalHostName, "51820", "ready", "VPN is active!"}))
-
-			// Condition should reflect Ready
-			Eventually(func() string {
-				wg := &v1alpha1.Wireguard{}
-				_ = k8sClient.Get(context.Background(), wgKey, wg)
-				for _, c := range wg.Status.Conditions {
-					if c.Type == ConditionReady {
-						return c.Reason
-					}
-				}
-				return ""
-			}, Timeout, Interval).Should(Equal("Active"))
-
-			Eventually(func() string {
-				deploymentKey := types.NamespacedName{
-					Name:      wgName + "-dep",
-					Namespace: wgNamespace,
-				}
-				deployment := &appsv1.Deployment{}
-				Expect(k8sClient.Get(context.Background(), deploymentKey, deployment)).Should(Succeed())
-				Expect(len(deployment.Spec.Template.Spec.Containers)).Should(Equal(1))
-				return deployment.Spec.Template.Spec.Containers[0].Image
-			}, Timeout, Interval).Should(Equal(wgTestImage))
-
-			// create peer
-			peerKey := types.NamespacedName{
-				Name:      wgKey.Name + "peer",
-				Namespace: wgKey.Namespace,
-			}
-			peer := &v1alpha1.WireguardPeer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      peerKey.Name,
-					Namespace: peerKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardPeerSpec{
-					WireguardRef: wgKey.Name,
-					PublicKey:    newPublicKey(),
-				},
-			}
-			Expect(k8sClient.Create(context.Background(), peer)).Should(Succeed())
-
-			// get peer secret
-			wgSecretKeyName := types.NamespacedName{
-				Name:      wgKey.Name,
-				Namespace: wgKey.Namespace,
-			}
-			wgSecret := &corev1.Secret{}
-			Eventually(func() error {
-				return k8sClient.Get(context.Background(), wgSecretKeyName, wgSecret)
-			}, Timeout, Interval).Should(Succeed())
-			_ = string(wgSecret.Data["publicKey"])
-
-			Eventually(func() string {
-				Expect(k8sClient.Get(context.Background(), peerKey, peer)).Should(Succeed())
-				print(peer.Status.Message)
-				return peer.Spec.Address
-			}, Timeout, Interval).Should(Equal("10.8.0.2"))
-
-			Eventually(func() v1alpha1.WireguardPeerStatus {
-				err := k8sClient.Get(context.Background(), peerKey, peer)
-				if err != nil {
-					return v1alpha1.WireguardPeerStatus{}
-				}
-				return peer.Status
-			}, Timeout, Interval).Should(Equal(v1alpha1.WireguardPeerStatus{
-				Status:  "ready",
-				Message: "Peer configured",
-			}))
-
-			Eventually(func() error {
-				return k8sClient.Get(context.Background(), wgSecretKeyName, wgSecret)
-			}, Timeout, Interval).Should(Succeed())
-
-		})
-
-		It("does not set loadBalancerIP when annotations are provided without address", func() {
-			wgServer := &v1alpha1.Wireguard{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      wgKey.Name,
-					Namespace: wgKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardSpec{
-					ServiceType:     corev1.ServiceTypeLoadBalancer,
-					ExternalAddress: "203.0.113.10",
-					ServiceAnnotations: map[string]string{
-						"lbipam.cilium.io/ips": "192.168.1.223",
-					},
-				},
-			}
-			Expect(k8sClient.Create(context.Background(), wgServer)).Should(Succeed())
-
-			serviceKey := types.NamespacedName{
-				Namespace: wgKey.Namespace,
-				Name:      wgKey.Name + "-svc",
-			}
-
-			Eventually(func() []string {
-				svc := &corev1.Service{}
-				err := k8sClient.Get(context.Background(), serviceKey, svc)
-				if err != nil {
-					return []string{}
-				}
-				return []string{svc.Spec.LoadBalancerIP, svc.Annotations["lbipam.cilium.io/ips"]}
-			}, Timeout, Interval).Should(Equal([]string{"", "192.168.1.223"}))
-		})
-
-		It("Should create a WG with ServiceType ClusterIP and WG peer successfully", func() {
-			expectedAddress := "test-address"
-
-			wgKey := types.NamespacedName{
-				Name:      wgName,
-				Namespace: wgNamespace,
-			}
-			created := &v1alpha1.Wireguard{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      wgKey.Name,
-					Namespace: wgKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardSpec{
-					ServiceType: corev1.ServiceTypeClusterIP,
-					Address:     expectedAddress,
 				},
 			}
 			expectedLabels := map[string]string{"app": "wireguard", "instance": wgKey.Name}
@@ -652,17 +232,15 @@ var _ = Describe("wireguard controller", func() {
 				WithTransform(func(s v1alpha1.WireguardStatus) string { return s.Status }, Equal("ready")),
 			))
 
-			Expect(reconcileServiceWithClusterIP(serviceKey, 51820)).Should(Succeed())
-
 			// check that wireguard resource got the right summary fields after the service is ready
 			wg := &v1alpha1.Wireguard{}
 			Eventually(func() []string {
 				err := k8sClient.Get(context.Background(), wgKey, wg)
 				if err != nil {
-					return []string{"", "", "", "", ""}
+					return []string{"", ""}
 				}
-				return []string{wg.Status.Address, wg.Status.Port, wg.Status.Status, wg.Status.Message}
-			}, Timeout, Interval).Should(Equal([]string{expectedAddress, "51820", "ready", "VPN is active!"}))
+				return []string{wg.Status.Status, wg.Status.Message}
+			}, Timeout, Interval).Should(Equal([]string{"ready", "VPN is active!"}))
 
 			Eventually(func() string {
 				deploymentKey := types.NamespacedName{
@@ -740,9 +318,7 @@ var _ = Describe("wireguard controller", func() {
 					Namespace: wgKey.Namespace,
 				},
 				Spec: v1alpha1.WireguardSpec{
-					ServiceType: corev1.ServiceTypeClusterIP,
-					Address:     "test-address",
-					PeerCIDR:    customCIDR,
+					PeerCIDR: customCIDR,
 				},
 			}
 			expectedLabels := map[string]string{"app": "wireguard", "instance": wgKey.Name}
@@ -769,8 +345,6 @@ var _ = Describe("wireguard controller", func() {
 				k8sClient.Get(context.Background(), serviceKey, svc)
 				return svc.Spec.Type
 			}, Timeout, Interval).Should(Equal(corev1.ServiceTypeClusterIP))
-
-			Expect(reconcileServiceWithClusterIP(serviceKey, 51820)).Should(Succeed())
 
 			// create peer
 			peerKey := types.NamespacedName{
@@ -810,10 +384,6 @@ var _ = Describe("wireguard controller", func() {
 					Name:      wgKey.Name,
 					Namespace: wgKey.Namespace,
 				},
-				Spec: v1alpha1.WireguardSpec{
-					ServiceType: corev1.ServiceTypeClusterIP,
-					Address:     "test-address",
-				},
 			}
 			Expect(k8sClient.Create(context.Background(), wgServer)).Should(Succeed())
 
@@ -825,7 +395,6 @@ var _ = Describe("wireguard controller", func() {
 				svc := &corev1.Service{}
 				return k8sClient.Get(context.Background(), serviceKey, svc)
 			}, Timeout, Interval).Should(Succeed())
-			Expect(reconcileServiceWithClusterIP(serviceKey, 51820)).Should(Succeed())
 
 			depKey := types.NamespacedName{
 				Namespace: wgKey.Namespace,
@@ -885,11 +454,9 @@ var _ = Describe("wireguard controller", func() {
 			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
 
 			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
-			// See reconcileServiceWithTypeLoadBalancer: wait for the Service, then call it once.
 			Eventually(func() error {
 				return k8sClient.Get(context.Background(), serviceKey, &corev1.Service{})
 			}, Timeout, Interval).Should(Succeed())
-			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, "localhost")).Should(Succeed())
 
 			deploymentKey := types.NamespacedName{Name: wgName + "-dep", Namespace: wgNamespace}
 			Eventually(func() error {
@@ -928,58 +495,11 @@ var _ = Describe("wireguard controller", func() {
 			}, Timeout, Interval).Should(Equal("123Mi"))
 		})
 
-		It("removes a service annotation the user has deleted from the spec", func() {
-			created := &v1alpha1.Wireguard{
-				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
-			}
-			created.Spec.ServiceAnnotations = map[string]string{
-				"probe.test/keep":   "yes",
-				"probe.test/remove": "please",
-			}
-			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
-
-			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
-			Eventually(func() bool {
-				svc := &corev1.Service{}
-				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
-					return false
-				}
-				_, ok := svc.Annotations["probe.test/remove"]
-				return ok
-			}, Timeout, Interval).Should(BeTrue(), "annotation should be present after create")
-
-			Eventually(func() error {
-				wg := &v1alpha1.Wireguard{}
-				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
-					return err
-				}
-				wg.Spec.ServiceAnnotations = map[string]string{"probe.test/keep": "yes"}
-				return k8sClient.Update(context.Background(), wg)
-			}, Timeout, Interval).Should(Succeed())
-
-			Eventually(func() bool {
-				svc := &corev1.Service{}
-				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
-					return true
-				}
-				_, stillThere := svc.Annotations["probe.test/remove"]
-				return stillThere
-			}, Timeout, Interval).Should(BeFalse(), "removed annotation should be dropped from the Service")
-
-			svc := &corev1.Service{}
-			Expect(k8sClient.Get(context.Background(), serviceKey, svc)).Should(Succeed())
-			Expect(svc.Annotations).Should(HaveKeyWithValue("probe.test/keep", "yes"))
-		})
-
 		It("rejects a peer with a duplicate address on the same wireguardRef", func() {
 			wgServer := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      wgKey.Name,
 					Namespace: wgKey.Namespace,
-				},
-				Spec: v1alpha1.WireguardSpec{
-					ServiceType: corev1.ServiceTypeClusterIP,
-					Address:     "test-address",
 				},
 			}
 			Expect(k8sClient.Create(context.Background(), wgServer)).Should(Succeed())
@@ -993,7 +513,6 @@ var _ = Describe("wireguard controller", func() {
 				svc := &corev1.Service{}
 				return k8sClient.Get(context.Background(), serviceKey, svc)
 			}, Timeout, Interval).Should(Succeed())
-			Expect(reconcileServiceWithClusterIP(serviceKey, 51820)).Should(Succeed())
 
 			// Wait for server to be ready
 			Eventually(func() string {
@@ -1077,8 +596,6 @@ var _ = Describe("wireguard controller", func() {
 						Namespace: wgKey.Namespace,
 					},
 					Spec: v1alpha1.WireguardSpec{
-						ServiceType:                  corev1.ServiceTypeClusterIP,
-						Address:                      "test-address",
 						UseWgUserspaceImplementation: useWgUserspace,
 					},
 				}
@@ -1092,7 +609,6 @@ var _ = Describe("wireguard controller", func() {
 					svc := &corev1.Service{}
 					return k8sClient.Get(context.Background(), serviceKey, svc)
 				}, Timeout, Interval).Should(Succeed())
-				Expect(reconcileServiceWithClusterIP(serviceKey, 51820)).Should(Succeed())
 
 				// new
 				depName := wgKey.Name + "-dep"
@@ -1136,11 +652,9 @@ var _ = Describe("wireguard controller", func() {
 			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
 
 			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
-			// See reconcileServiceWithTypeLoadBalancer: wait for the Service, then call it once.
 			Eventually(func() error {
 				return k8sClient.Get(context.Background(), serviceKey, &corev1.Service{})
 			}, Timeout, Interval).Should(Succeed())
-			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, "localhost")).Should(Succeed())
 
 			deploymentKey := types.NamespacedName{Name: wgName + "-dep", Namespace: wgNamespace}
 			Eventually(func() error {
@@ -1170,11 +684,10 @@ var _ = Describe("wireguard controller", func() {
 			}, Timeout, Interval).Should(Equal(wgTestImage))
 		})
 
-		It("preserves the apiserver's clusterIP and nodePort allocations across reconciles", func() {
+		It("preserves the apiserver's clusterIP allocation across reconciles", func() {
 			created := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
 			}
-			created.Spec.ServiceType = corev1.ServiceTypeNodePort
 			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
 
 			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
@@ -1183,8 +696,8 @@ var _ = Describe("wireguard controller", func() {
 				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
 					return false
 				}
-				return len(svc.Spec.Ports) > 0 && svc.Spec.Ports[0].NodePort != 0 && svc.Spec.ClusterIP != ""
-			}, Timeout, Interval).Should(BeTrue(), "apiserver should have allocated clusterIP and nodePort")
+				return svc.Spec.ClusterIP != ""
+			}, Timeout, Interval).Should(BeTrue(), "apiserver should have allocated a clusterIP")
 
 			first := &corev1.Service{}
 			Expect(k8sClient.Get(context.Background(), serviceKey, first)).Should(Succeed())
@@ -1209,10 +722,8 @@ var _ = Describe("wireguard controller", func() {
 				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
 					return false
 				}
-				return svc.Spec.ClusterIP == first.Spec.ClusterIP &&
-					len(svc.Spec.Ports) > 0 &&
-					svc.Spec.Ports[0].NodePort == first.Spec.Ports[0].NodePort
-			}, "3s", Interval).Should(BeTrue(), "server-assigned clusterIP/nodePort must survive apply")
+				return svc.Spec.ClusterIP == first.Spec.ClusterIP
+			}, "3s", Interval).Should(BeTrue(), "the server-assigned clusterIP must survive apply")
 		})
 
 		It("adopts a Deployment written before Server-Side Apply, so a later removal converges", func() {
@@ -1252,11 +763,9 @@ var _ = Describe("wireguard controller", func() {
 			Expect(k8sClient.Create(context.Background(), owner)).Should(Succeed())
 
 			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
-			// See reconcileServiceWithTypeLoadBalancer: wait for the Service, then call it once.
 			Eventually(func() error {
 				return k8sClient.Get(context.Background(), serviceKey, &corev1.Service{})
 			}, Timeout, Interval).Should(Succeed())
-			Expect(reconcileServiceWithTypeLoadBalancer(serviceKey, "localhost")).Should(Succeed())
 
 			// Adopted: the owner reference proves the operator's apply ran (the migration patch
 			// alone adds none).
@@ -1305,18 +814,17 @@ var _ = Describe("wireguard controller", func() {
 			Expect(managers).ShouldNot(ContainElement("manager"), "the legacy Update entry must be gone")
 		})
 
-		It("adopts a legacy Service without moving its clusterIP or nodePort allocation", func() {
+		It("adopts a legacy Service without moving its clusterIP allocation", func() {
 			// Spec 6's Service variant (design §10.2 item 10): if the legacy entry owned an
 			// allocated field, migration would hand it to the operator, whose next apply
-			// relinquishes it. The assertions below pin that it owns neither clusterIP nor
-			// nodePort, and that both allocations survive adoption.
+			// relinquishes it. The assertions below pin that it does not own clusterIP, and
+			// that the allocation survives adoption.
 			// Same seeding rules as above; BeforeEach already deletes Services.
 			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
 			owner := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
 			}
-			owner.Spec.ServiceType = corev1.ServiceTypeNodePort
-			legacy, err := resources.NewServiceBuilder(k8sClient.Scheme()).ForWireguard(owner, corev1.ServiceTypeNodePort)
+			legacy, err := resources.NewServiceBuilder(k8sClient.Scheme()).ForWireguard(owner)
 			Expect(err).ShouldNot(HaveOccurred())
 			legacy.OwnerReferences = nil
 			Expect(k8sClient.Create(context.Background(), legacy, client.FieldOwner("manager"))).Should(Succeed())
@@ -1324,11 +832,9 @@ var _ = Describe("wireguard controller", func() {
 			seeded := &corev1.Service{}
 			Expect(k8sClient.Get(context.Background(), serviceKey, seeded)).Should(Succeed())
 			Expect(seeded.Spec.ClusterIP).ShouldNot(BeEmpty())
-			Expect(seeded.Spec.Ports).ShouldNot(BeEmpty())
-			Expect(seeded.Spec.Ports[0].NodePort).ShouldNot(BeZero())
 
-			// The apiserver allocated clusterIP and nodePort itself, so the legacy Update entry
-			// must not own them: there is nothing allocated for the migration to hand over.
+			// The apiserver allocated clusterIP itself, so the legacy Update entry must not own
+			// it: there is nothing allocated for the migration to hand over.
 			var legacyFields string
 			for _, mf := range seeded.ManagedFields {
 				if mf.Manager == "manager" && mf.Operation == metav1.ManagedFieldsOperationUpdate && mf.FieldsV1 != nil {
@@ -1337,7 +843,6 @@ var _ = Describe("wireguard controller", func() {
 			}
 			Expect(legacyFields).ShouldNot(BeEmpty(), "the seed must carry an Update entry for manager")
 			Expect(legacyFields).ShouldNot(ContainSubstring(`"f:clusterIP"`), "the legacy entry must not own clusterIP")
-			Expect(legacyFields).ShouldNot(ContainSubstring(`"f:nodePort"`), "the legacy entry must not own nodePort")
 
 			Expect(k8sClient.Create(context.Background(), owner)).Should(Succeed())
 
@@ -1355,17 +860,56 @@ var _ = Describe("wireguard controller", func() {
 			}, Timeout, Interval).Should(BeTrue(), "the operator should adopt the legacy Service")
 
 			Expect(adopted.Spec.ClusterIP).Should(Equal(seeded.Spec.ClusterIP))
-			Expect(adopted.Spec.Ports).ShouldNot(BeEmpty())
-			Expect(adopted.Spec.Ports[0].NodePort).Should(Equal(seeded.Spec.Ports[0].NodePort))
 		})
 
-		It("reports Degraded while an apply can never succeed, and clears it once one does", func() {
-			// nodePort on a ClusterIP Service is rejected by the apiserver, permanently.
+		It("converts a Service left as LoadBalancer by an earlier operator to ClusterIP", func() {
+			// A cluster that ran the operator before the trim can still hold <name>-svc as a
+			// LoadBalancer written by the "manager" field manager. It must converge, not wedge.
+			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
+			labels := resources.LabelsForWireguard(wgName)
+			legacy := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: serviceKey.Name, Namespace: serviceKey.Namespace, Labels: labels},
+				Spec: corev1.ServiceSpec{
+					Type:     corev1.ServiceTypeLoadBalancer,
+					Selector: labels,
+					Ports: []corev1.ServicePort{{
+						Name: "wireguard", Protocol: corev1.ProtocolUDP, Port: resources.WireguardPort,
+					}},
+				},
+			}
+			Expect(k8sClient.Create(context.Background(), legacy, client.FieldOwner("manager"))).Should(Succeed())
+
 			created := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
 			}
-			created.Spec.ServiceType = corev1.ServiceTypeClusterIP
-			created.Spec.NodePort = 30123
+			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
+
+			Eventually(func() corev1.ServiceType {
+				svc := &corev1.Service{}
+				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
+					return ""
+				}
+				return svc.Spec.Type
+			}, Timeout, Interval).Should(Equal(corev1.ServiceTypeClusterIP))
+
+			Eventually(func() string {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return ""
+				}
+				return wg.Status.Status
+			}, Timeout, Interval).Should(Equal(v1alpha1.Ready))
+		})
+
+		It("reports Degraded while an apply can never succeed, and clears it once one does", func() {
+			// A memory request above its limit is rejected by the apiserver, permanently.
+			created := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			}
+			created.Spec.Agent.Resources = corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
+			}
 			Expect(k8sClient.Create(context.Background(), created)).Should(Succeed())
 
 			Eventually(func() string {
@@ -1379,7 +923,7 @@ var _ = Describe("wireguard controller", func() {
 					}
 				}
 				return "no-degraded-condition"
-			}, Timeout, Interval).Should(Equal("ServiceApplyFailed"))
+			}, Timeout, Interval).Should(Equal("DeploymentApplyFailed"))
 
 			// Remove the cause. The next reconcile applies every object, so Ready must be True and
 			// Degraded must be False -- not left True beside it from the earlier failure.
@@ -1388,7 +932,7 @@ var _ = Describe("wireguard controller", func() {
 				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
 					return err
 				}
-				wg.Spec.NodePort = 0
+				wg.Spec.Agent.Resources = corev1.ResourceRequirements{}
 				return k8sClient.Update(context.Background(), wg)
 			}, Timeout, Interval).Should(Succeed())
 

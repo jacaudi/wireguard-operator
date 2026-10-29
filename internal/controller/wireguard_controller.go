@@ -20,8 +20,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
@@ -79,35 +77,6 @@ func (r *WireguardReconciler) getWireguardPeers(ctx context.Context, req ctrl.Re
 	}
 
 	return relatedPeers, nil
-}
-
-func (r *WireguardReconciler) getNodeIps(ctx context.Context) ([]string, error) {
-	nodes := &corev1.NodeList{}
-	if err := r.List(ctx, nodes); err != nil {
-		return nil, err
-	}
-
-	ips := []string{}
-
-	for _, node := range nodes.Items {
-		for _, address := range node.Status.Addresses {
-			if address.Type == corev1.NodeExternalIP {
-				ips = append(ips, address.Address)
-			}
-		}
-	}
-
-	if len(ips) == 0 {
-		for _, node := range nodes.Items {
-			for _, address := range node.Status.Addresses {
-				if address.Type == corev1.NodeInternalIP {
-					ips = append(ips, address.Address)
-				}
-			}
-		}
-	}
-
-	return ips, nil
 }
 
 func (r *WireguardReconciler) updateStatus(ctx context.Context, req ctrl.Request, cond metav1.Condition) error {
@@ -257,7 +226,6 @@ func (r *WireguardReconciler) markPeerPublicKeyMissing(ctx context.Context, peer
 //+kubebuilder:rbac:groups="apps",resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="apps",resources=pods,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=nodes,verbs=list;watch
 //+kubebuilder:rbac:groups=authentication.k8s.io,resources=tokenreviews,verbs=create
 //+kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 
@@ -327,114 +295,16 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		filteredPeers = append(filteredPeers, peer)
 	}
 
-	serviceType := corev1.ServiceTypeLoadBalancer
-
-	if wireguard.Spec.ServiceType != "" {
-		serviceType = wireguard.Spec.ServiceType
-	}
-	if serviceType == corev1.ServiceTypeLoadBalancer && len(wireguard.Spec.ServiceAnnotations) > 0 && wireguard.Spec.Address == "" {
-		log.Info("Service annotations set without address; the LB controller must assign an IP", "wireguard", wireguard.Name, "namespace", wireguard.Namespace)
-	}
-
 	// service
 	//
-	// Every field the builder renders converges: annotations, target ports, protocols and the
-	// second port in dualMode. Server-assigned fields survive because the builder never renders
-	// them: clusterIP and ipFamilies are absent from the applied body, and a nodePort of 0 is
-	// dropped by omitempty, so the operator never takes ownership of the apiserver's allocation.
-	desiredSvc, err := r.serviceBuilder.ForWireguard(wireguard, serviceType)
+	// Every field the builder renders converges. The server-assigned clusterIP survives because
+	// the builder never renders it, so the operator never takes ownership of the allocation.
+	desiredSvc, err := r.serviceBuilder.ForWireguard(wireguard)
 	if err != nil {
 		return r.failDegraded(ctx, req, err, "ServiceBuildFailed", "Failed to build service")
 	}
 	if err := r.applyOwned(ctx, desiredSvc); err != nil {
 		return r.failDegraded(ctx, req, err, "ServiceApplyFailed", "Failed to apply service")
-	}
-	svcFound := desiredSvc
-
-	address := wireguard.Spec.ExternalAddress
-	if address == "" {
-		address = wireguard.Spec.Address
-	}
-
-	var port = fmt.Sprintf("%d", resources.WireguardPort)
-
-	if serviceType == corev1.ServiceTypeLoadBalancer {
-		ingressList := svcFound.Status.LoadBalancer.Ingress
-		log.Info("Found ingress", "ingress", ingressList)
-		if len(ingressList) == 0 {
-			err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "ServiceNotReady", Message: "Waiting for service to be ready"})
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			return ctrl.Result{}, nil
-		}
-
-		if address == "" {
-			address = svcFound.Status.LoadBalancer.Ingress[0].Hostname
-
-		}
-		if address == "" {
-			address = svcFound.Status.LoadBalancer.Ingress[0].IP
-		}
-	}
-	if serviceType == corev1.ServiceTypeNodePort {
-		if len(svcFound.Spec.Ports) == 0 {
-			err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "NodePortPending", Message: "Waiting for service with type NodePort to be ready"})
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			return ctrl.Result{}, nil
-		}
-
-		port = strconv.Itoa(int(svcFound.Spec.Ports[0].NodePort))
-
-		ips, err := r.getNodeIps(ctx)
-
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if address == "" {
-			if len(ips) == 0 {
-				err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "AwaitingNodeIPs", Message: "Unable to determine WG address through nodes addresses. Please set Wireguard.Spec.ExternalAddress or Wireguard.Spec.Address if necessary."})
-				if err != nil {
-					return ctrl.Result{}, err
-				}
-				return ctrl.Result{}, nil
-			}
-			address = ips[0]
-		}
-
-	}
-
-	if serviceType == corev1.ServiceTypeClusterIP {
-		if len(svcFound.Spec.Ports) == 0 {
-			err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "ClusterIPPending", Message: "Waiting for service with type ClusterIP to be ready"})
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			return ctrl.Result{}, nil
-		}
-	}
-
-	if wireguard.Status.Address != address || port != wireguard.Status.Port {
-		latest := &v1alpha1.Wireguard{}
-		if err := r.Get(ctx, req.NamespacedName, latest); err == nil {
-			latest.Status.Address = address
-			latest.Status.Port = port
-			if err := r.Status().Update(ctx, latest); err != nil {
-				if errors.IsNotFound(err) || errors.IsConflict(err) {
-					// ignore and let reconcile retry
-				} else {
-					log.Error(err, "Failed to update wireguard manifest address and port")
-					return ctrl.Result{}, err
-				}
-			}
-		}
-		// requeue to continue processing with updated status
-		return ctrl.Result{}, nil
 	}
 
 	// fetch secret
@@ -574,92 +444,6 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	if err := r.applyOwned(ctx, desiredDep); err != nil {
 		return r.failDegraded(ctx, req, err, "DeploymentApplyFailed", "Failed to apply deployment")
-	}
-
-	// Update resource-level status and unique identifier if available
-	{
-		resourcesStatus := make([]v1alpha1.Resource, 0, 4)
-
-		// Service status
-		svcStatus := "Pending"
-		switch serviceType {
-		case corev1.ServiceTypeLoadBalancer:
-			if len(svcFound.Status.LoadBalancer.Ingress) > 0 {
-				svcStatus = "Ready"
-			}
-		case corev1.ServiceTypeNodePort:
-			if len(svcFound.Spec.Ports) > 0 && svcFound.Spec.Ports[0].NodePort != 0 {
-				svcStatus = "Ready"
-			}
-		default: // ClusterIP
-			if svcFound.Spec.ClusterIP != "" {
-				svcStatus = "Ready"
-			}
-		}
-		resourcesStatus = append(resourcesStatus, v1alpha1.Resource{Name: svcFound.Name, Type: "Service", Status: svcStatus})
-
-		// ConfigMap status
-		cfgStatus := "Pending"
-		if configFound.Name != "" {
-			cfgStatus = "Ready"
-		}
-		resourcesStatus = append(resourcesStatus, v1alpha1.Resource{Name: configFound.Name, Type: "ConfigMap", Status: cfgStatus})
-
-		// Secret status and unique identifier
-		secStatus := "Pending"
-		uniqueIdentifier := ""
-		if secret.Name != "" {
-			secStatus = "Ready"
-			uniqueIdentifier = string(secret.Data["publicKey"])
-		}
-		resourcesStatus = append(resourcesStatus, v1alpha1.Resource{Name: wireguard.Name, Type: "Secret", Status: secStatus})
-
-		// Deployment status
-		depStatus := "Pending"
-		depImage := ""
-		if desiredDep.Name != "" {
-			if desiredDep.Status.ReadyReplicas > 0 {
-				depStatus = "Ready"
-			}
-			for _, c := range desiredDep.Spec.Template.Spec.Containers {
-				if c.Name == "agent" {
-					depImage = c.Image
-					break
-				}
-			}
-		}
-		resourcesStatus = append(resourcesStatus, v1alpha1.Resource{Name: desiredDep.Name, Type: "Deployment", Status: depStatus, Image: depImage})
-
-		// Update status if changed
-		needUpdate := false
-		if wireguard.Status.UniqueIdentifier != uniqueIdentifier {
-			needUpdate = true
-		}
-		if len(wireguard.Status.Resources) != len(resourcesStatus) {
-			needUpdate = true
-		} else {
-			for i := range resourcesStatus {
-				if wireguard.Status.Resources[i] != resourcesStatus[i] {
-					needUpdate = true
-					break
-				}
-			}
-		}
-		if needUpdate {
-			latest := &v1alpha1.Wireguard{}
-			if err := r.Get(ctx, req.NamespacedName, latest); err == nil {
-				latest.Status.UniqueIdentifier = uniqueIdentifier
-				latest.Status.Resources = resourcesStatus
-				if err := r.Status().Update(ctx, latest); err != nil {
-					if errors.IsNotFound(err) || errors.IsConflict(err) {
-						// ignore; continue
-					} else {
-						log.Error(err, "Failed to update wireguard resource status")
-						return ctrl.Result{}, err
-					}
-				}
-			}
-		}
 	}
 
 	if err := r.updateWireguardPeers(ctx, req, wireguard); err != nil {
