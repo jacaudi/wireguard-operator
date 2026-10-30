@@ -36,7 +36,7 @@ ARG WIREGUARD_GO_SRC
 ARG WIREGUARD_AGENT_SRC
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y iptables wireguard-tools \
+    && apt-get install --no-install-recommends -y iproute2 iptables wireguard-tools \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=golang-builder $WIREGUARD_GO_SRC/wireguard-go /usr/local/bin
