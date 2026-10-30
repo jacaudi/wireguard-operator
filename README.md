@@ -6,10 +6,6 @@ Painless deployment of wireguard on kubernetes
 
 If you are facing any problems please open an [issue](https://github.com/jacaudi/wireguard-operator/issues)
 
-## Architecture 
-
-![alt text](./readme/main.png)
-
 ## Features 
 * Falls back to userspace implementation of wireguard [wireguard-go](https://github.com/WireGuard/wireguard-go) if wireguard kernal module is missing
 * Automatic server key generation
