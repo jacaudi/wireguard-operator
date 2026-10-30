@@ -6,33 +6,16 @@ Painless deployment of wireguard on kubernetes
 
 If you are facing any problems please open an [issue](https://github.com/jacaudi/wireguard-operator/issues)
 
-## Tested with
-- [x] IBM Cloud Kubernetes Service
-- [x] Gcore Labs KMP
-  * requires `spec.enableIpForwardOnPodInit: true`
-- [x] Google Kubernetes Engine
-  * requires `spec.mtu: "1380"`
-  * Not compatible with "Container-Optimized OS with containerd" node images
-  * Not compatible with autopilot
-- [x] DigitalOcean Kubernetes
-  * requires `spec.serviceType: "NodePort"`. DigitalOcean LoadBalancer does not support UDP. 
-- [ ] Amazon EKS
-- [ ] Azure Kubernetes Service
-- [ ] ...?
-
 ## Architecture 
 
 ![alt text](./readme/main.png)
 
 ## Features 
 * Falls back to userspace implementation of wireguard [wireguard-go](https://github.com/WireGuard/wireguard-go) if wireguard kernal module is missing
-* Automatic key generation
-* Automatic IP allocation
-* Does not need persistance. peer/server keys are stored as k8s secrets and loaded into the wireguard pod
-* Exposes a metrics endpoint
-* Supports tunneling/traffic obfuscation using [wstunnel](https://github.com/erebe/wstunnel)
-* IPv6 support, including IPv6-only peers, through `spec.peerCIDRv6` and `spec.ipv6Only`
-* Per-peer egress network policies through `WireguardPeer.spec.egressNetworkPolicies`
+* Automatic server key generation
+* Automatic IP allocation for peers
+* Does not need persistance. The server key is stored as a k8s secret and loaded into the wireguard pod
+* The server is reachable in-cluster only, through a ClusterIP Service on UDP 51820
 
 ## Example
 
@@ -43,8 +26,7 @@ apiVersion: vpn.wireguard-operator.io/v1alpha1
 kind: Wireguard
 metadata:
   name: "my-cool-vpn"
-spec:
-  mtu: "1380"
+spec: {}
 ```
 
 ### Peer
@@ -56,34 +38,14 @@ metadata:
   name: peer1
 spec:
   wireguardRef: "my-cool-vpn"
+  # The public half of a key the client generated itself: wg genkey | wg pubkey
+  publicKey: "v5Q+oRNBfxafhiAR9bXGEhRsRFfEFb7XsFV8DWGrykQ="
 ```
 
-#### Peer configuration
-
-Peer configurations are stored in a Secret named `<wireguard-name>-peer-configs`, one key per peer. Retrieve and decode like this:
-
-```console
-kubectl get secret my-cool-vpn-peer-configs -o jsonpath='{.data.peer1}' | base64 -d
-```
-
-Use the output to configure your preferred Wireguard client:
-
-```console
-[Interface]
-PrivateKey = WOhR7uTMAqmZamc1umzfwm8o4ZxLdR5LjDcUYaW/PH8=
-Address = 10.8.0.3
-DNS = 10.48.0.10, default.svc.cluster.local
-MTU = 1380
-
-[Peer]
-PublicKey = sO3ZWhnIT8owcdsfwiMRu2D8LzKmae2gUAxAmhx5GTg=
-AllowedIPs = 0.0.0.0/0
-Endpoint = 32.121.45.102:51820
-PersistentKeepalive = 25
-```
-
-`PersistentKeepalive` defaults to 25 seconds and is configurable through
-`Wireguard.Spec.PersistentKeepalive`. Set it to `0` to omit it.
+The operator stores no client configuration and no client private key: each peer
+generates its own key and registers only the public half. The in-pod client that
+consumes this is designed in
+[`docs/designs/2026-10-29-minimal-vpn-gateway-design.md`](docs/designs/2026-10-29-minimal-vpn-gateway-design.md).
 
 ## How to deploy
 
@@ -93,9 +55,8 @@ PersistentKeepalive = 25
 > from source.
 >
 > Earlier revisions of this README pointed at upstream's release and chart. Those
-> install the diverging upstream operator, which does not carry this fork's features —
-> `spec.persistentKeepalive`, for example — so they have been removed rather than
-> repointed.
+> install the diverging upstream operator, which is a different product from this fork,
+> so they have been removed rather than repointed.
 
 ```
 make deploy
