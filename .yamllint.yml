@@ -51,20 +51,19 @@ ignore: |
   # --- repo-specific additions below; everything above is the fleet baseline ---
   #
   # SAME ROOT CAUSE AS crds/ ABOVE, one directory up. This is a kubebuilder
-  # project, so controller-gen, kustomize and operator-sdk own these trees and
-  # all three marshal through sigs.k8s.io/yaml — whose yaml.v2 backend writes
+  # project, so controller-gen and kustomize own these trees and
+  # both marshal through sigs.k8s.io/yaml — whose yaml.v2 backend writes
   # block sequences WITHOUT indenting them under their key, which
   # `indent-sequences: true` rejects outright. Measured before ignoring: 341
   # findings, 136 of them indentation inside config/ alone.
   #
   # Fixing them does not stick. `make manifests` regenerates config/crd/bases
   # and config/rbac/role.yaml, `make generate-release-file` regenerates
-  # release.yaml, and operator-sdk regenerates bundle/ — so a hand-reindented
+  # release.yaml — so a hand-reindented
   # file is undone by the next codegen run, and the drift gate in ci-test would
   # then fail on the difference.
   #
   # Deliberately NOT ignored: examples/ and .github/, which are hand-written and
   # were fixed rather than exempted.
   config/
-  bundle/
   release.yaml

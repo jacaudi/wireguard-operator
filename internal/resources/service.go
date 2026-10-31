@@ -25,7 +25,9 @@ import (
 )
 
 const (
-	// WireguardPort is the default port for Wireguard VPN.
+	// WireguardPort is the fixed UDP port the gateway listens on. It is not configurable
+	// because the gateway is reached only inside the cluster, through a ClusterIP Service,
+	// so there is no external exposure that would need a different port.
 	WireguardPort = 51820
 )
 
@@ -55,7 +57,7 @@ func (b *ServiceBuilder) ForWireguard(wg *v1alpha1.Wireguard) (*corev1.Service, 
 				Name:       "wireguard",
 				Protocol:   corev1.ProtocolUDP,
 				Port:       WireguardPort,
-				TargetPort: intstr.FromInt(WireguardPort),
+				TargetPort: intstr.FromInt32(WireguardPort),
 			}},
 			Type: corev1.ServiceTypeClusterIP,
 		},

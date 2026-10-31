@@ -73,13 +73,6 @@ var _ = Describe("wireguard controller", func() {
 		for _, secret := range secretList.Items {
 			Expect(k8sClient.Delete(context.Background(), &secret)).Should(Succeed())
 		}
-
-		// delete all configmaps
-		cList := &corev1.ConfigMapList{}
-		Expect(k8sClient.List(context.Background(), cList, listOpts...)).Should(Succeed())
-		for _, c := range cList.Items {
-			Expect(k8sClient.Delete(context.Background(), &c)).Should(Succeed())
-		}
 	})
 	Context("Wireguard", func() {
 		It("allocates an address to a publicKey peer and writes no client config", func() {

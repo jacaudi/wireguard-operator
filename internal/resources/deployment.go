@@ -148,7 +148,7 @@ func (b *DeploymentBuilder) agentContainer(wg *v1alpha1.Wireguard, readOnlyRootF
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Port: intstr.FromInt(HTTPPort),
+					Port: intstr.FromInt32(HTTPPort),
 					Path: "/health",
 				},
 			},
@@ -157,7 +157,7 @@ func (b *DeploymentBuilder) agentContainer(wg *v1alpha1.Wireguard, readOnlyRootF
 			PeriodSeconds: 5,
 			ProbeHandler: corev1.ProbeHandler{
 				TCPSocket: &corev1.TCPSocketAction{
-					Port: intstr.FromInt(HTTPPort),
+					Port: intstr.FromInt32(HTTPPort),
 				},
 			},
 		},
