@@ -5,18 +5,20 @@ package it
 
 import (
 	"context"
-	"log"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-logr/stdr"
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	v12 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
@@ -81,16 +83,34 @@ func waitForDeploymentTobeReady(name string, namespace string) {
 
 }
 
+// WaitForWireguardToBeReady waits until the controller has processed the Wireguard's current spec
+// (#45), then until its Deployment has rolled out.
+//
+// The CR's Ready condition is the only signal that the controller has seen a spec: the condition
+// records the generation it was written for, so Ready=True with an observedGeneration that has
+// caught up with metadata.generation means the controller acted on this spec. The Deployment's own
+// generation cannot show that; it does not move until the controller applies the change.
+//
+// The barrier is not exact. updateStatus stamps the generation of the object it re-reads, not the
+// generation the reconcile rendered, so a patch landing mid-reconcile can still race.
+//
+// The condition type is the literal "Ready": this suite is an external client of the CRD's
+// condition contract and does not import internal/controller.
 func WaitForWireguardToBeReady(name string, namespace string) {
-	Eventually(func() string {
+	Eventually(func() bool {
 		wgKey := types.NamespacedName{
 			Namespace: namespace,
 			Name:      name,
 		}
 		wg := &v1alpha1.Wireguard{}
-		k8sClient.Get(context.Background(), wgKey, wg)
-		return wg.Status.Status
-	}, Timeout, Interval).Should(Equal(v1alpha1.Ready))
+		if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+			return false
+		}
+		ready := meta.FindStatusCondition(wg.Status.Conditions, "Ready")
+		return ready != nil &&
+			ready.Status == metav1.ConditionTrue &&
+			ready.ObservedGeneration >= wg.Generation
+	}, Timeout, Interval).Should(BeTrue())
 
 	waitForDeploymentTobeReady(name+"-dep", namespace)
 }
@@ -120,6 +140,26 @@ func KubectlLogs(pod string, namespace string) (string, error) {
 		"-n", namespace,
 		pod,
 	)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return strings.TrimSpace(stderr.String()), err
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// KubectlExec runs a command in a container of the first pod behind a Deployment, using the
+// test kind context, and returns its trimmed stdout (stderr on failure).
+func KubectlExec(deployment, container, namespace string, command ...string) (string, error) {
+	args := []string{"exec",
+		"--context", testKindContextName,
+		"-n", namespace,
+		"deploy/" + deployment,
+		"-c", container,
+		"--",
+	}
+	cmd := exec.Command("kubectl", append(args, command...)...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -183,20 +223,38 @@ func KubectlPatch(resource string, namespace string, patchType string, patch str
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-var e2eEnabled bool
+// exitStderr returns the trimmed stderr of a failed exec.Cmd, or "" when err is not an *exec.ExitError.
+func exitStderr(err error) string {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		return strings.TrimSpace(string(exitErr.Stderr))
+	}
+	return ""
+}
+
+// clusterCreated is true once this run has created the kind cluster, so AfterSuite deletes only a
+// cluster the run owns.
+var clusterCreated bool
 
 var _ = BeforeSuite(func() {
-	releasePath = os.Getenv("WIREGUARD_OPERATOR_RELEASE_PATH")
-	agentImage = os.Getenv("AGENT_IMAGE")
-	managerImage = os.Getenv("MANAGER_IMAGE")
-	kindBinary = os.Getenv("KIND_BIN")
-	kubeConfigPath = os.Getenv("KUBE_CONFIG")
-
-	if releasePath == "" || agentImage == "" || managerImage == "" || kindBinary == "" || kubeConfigPath == "" {
-		e2eEnabled = false
-		Skip("integration test env not configured; skipping e2e tests")
+	envs := []struct {
+		name string
+		dest *string
+	}{
+		{"WIREGUARD_OPERATOR_RELEASE_PATH", &releasePath},
+		{"AGENT_IMAGE", &agentImage},
+		{"MANAGER_IMAGE", &managerImage},
+		{"KIND_BIN", &kindBinary},
+		{"KUBE_CONFIG", &kubeConfigPath},
 	}
-	e2eEnabled = true
+	var missing []string
+	for _, e := range envs {
+		if *e.dest = os.Getenv(e.name); *e.dest == "" {
+			missing = append(missing, e.name)
+		}
+	}
+	if len(missing) > 0 {
+		Fail(fmt.Sprintf("e2e suite needs %s; run it through make run-e2e", strings.Join(missing, ", ")))
+	}
 
 	config := v1alpha4.Cluster{
 		Nodes: []v1alpha4.Node{
@@ -213,18 +271,14 @@ var _ = BeforeSuite(func() {
 		},
 	}
 
-	log := stdr.NewWithOptions(log.New(os.Stderr, "", log.LstdFlags), stdr.Options{LogCaller: stdr.All})
-
 	By("bootstrapping test environment")
 
 	provider := kind.NewProvider(
 		kind.ProviderWithLogger(log2.NoopLogger{}))
 
 	err := provider.Create(testClusterName, kind.CreateWithV1Alpha4Config(&config))
-	if err != nil {
-		log.Error(err, "unable to create kind cluster")
-		return
-	}
+	Expect(err).NotTo(HaveOccurred(), "kind create cluster %s", testClusterName)
+	clusterCreated = true
 
 	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeConfigPath},
@@ -233,41 +287,21 @@ var _ = BeforeSuite(func() {
 		})
 
 	c, err := clientConfig.ClientConfig()
-	if err != nil {
-		log.Error(err, "unable to create kind cluster")
-		return
-	}
+	Expect(err).NotTo(HaveOccurred(), "build the kind client config")
 
 	// load locally built images
-	if _, err := exec.
-		Command(kindBinary, "load", "docker-image", managerImage, "--name", testClusterName).
-		Output(); err != nil {
-		if err != nil {
-			if exitError, ok := err.(*exec.ExitError); ok {
-				log.Info(string(exitError.Stderr))
-				Expect(err).NotTo(HaveOccurred())
-			}
-		}
-
-		log.Error(err, "unable to load local image manager:dev")
-		Expect(err).NotTo(HaveOccurred())
-	}
-
-	if _, err := exec.
-		Command(kindBinary, "load", "docker-image", agentImage, "--name", testClusterName).
-		Output(); err != nil {
-		log.Error(err, "unable to load local image agent:dev")
-		return
+	for _, image := range []string{managerImage, agentImage} {
+		_, err := exec.
+			Command(kindBinary, "load", "docker-image", image, "--name", testClusterName).
+			Output()
+		Expect(err).NotTo(HaveOccurred(), "kind load docker-image %s: %s", image, exitStderr(err))
 	}
 
 	// simulate what users exactly do in real life.
 	b, err := exec.
 		Command("kubectl", "apply", "-f", releasePath, "--context", testKindContextName).
 		Output()
-	if err != nil {
-		log.Error(err, "unable to apply release.yaml")
-		return
-	}
+	Expect(err).NotTo(HaveOccurred(), "kubectl apply -f %s: %s", releasePath, exitStderr(err))
 
 	expectedResources := []string{
 		"namespace/wireguard-system",
@@ -288,10 +322,10 @@ var _ = BeforeSuite(func() {
 	Expect(strings.Split(strings.Trim(strings.ReplaceAll(string(b), " created", ""), "\n"), "\n")).To(BeEquivalentTo(expectedResources))
 
 	err = v1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
+	Expect(err).NotTo(HaveOccurred(), "add the v1alpha1 scheme")
 
 	k8sClient, err = client.New(c, client.Options{Scheme: scheme.Scheme})
-	Expect(err).NotTo(HaveOccurred())
+	Expect(err).NotTo(HaveOccurred(), "build the controller-runtime client")
 
 	// wait until operator is ready
 	Eventually(func() int {
@@ -304,16 +338,11 @@ var _ = BeforeSuite(func() {
 		k8sClient.Get(context.Background(), deploymentKey, deployment)
 		return int(deployment.Status.ReadyReplicas)
 	}, Timeout, Interval).Should(Equal(1))
-
-	go func() {
-		defer GinkgoRecover()
-	}()
-
 }, 60)
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")
-	if !e2eEnabled {
+	if !clusterCreated {
 		return
 	}
 	cleanup := os.Getenv("SKIP_CLEANUP")
