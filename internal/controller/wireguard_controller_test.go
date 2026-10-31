@@ -660,6 +660,123 @@ var _ = Describe("wireguard controller", func() {
 			Eventually(serverState(wg2Key), Timeout, Interval).Should(ContainSubstring(publicKey), "the new server admits the peer")
 		})
 
+		It("does not rewrite the server Secret for a peer edit the agent does not read", func() {
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			})).Should(Succeed())
+
+			publicKey := newPublicKey()
+			peerKey := types.NamespacedName{Name: wgName + "-quiet-peer", Namespace: wgNamespace}
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: peerKey.Name, Namespace: peerKey.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: publicKey},
+			})).Should(Succeed())
+
+			Eventually(func() string {
+				wg := &v1alpha1.Wireguard{}
+				_ = k8sClient.Get(context.Background(), wgKey, wg)
+				return wg.Status.Status
+			}, Timeout, Interval).Should(Equal("ready"))
+			Eventually(serverState(wgKey), Timeout, Interval).Should(ContainSubstring(publicKey))
+
+			// Settle: let the cascade of reconciles the creates caused finish before counting.
+			Eventually(func() bool {
+				before := writeCounter.writesTo(wgNamespace, wgName)
+				time.Sleep(2 * time.Second)
+				return writeCounter.writesTo(wgNamespace, wgName) == before
+			}, "20s", Interval).Should(BeTrue())
+			n := writeCounter.writesTo(wgNamespace, wgName)
+
+			for _, label := range []string{"a", "b", "c"} {
+				Eventually(func() error {
+					got := &v1alpha1.WireguardPeer{}
+					if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
+						return err
+					}
+					if got.Labels == nil {
+						got.Labels = map[string]string{}
+					}
+					got.Labels["probe.test/nudge"] = label
+					return k8sClient.Update(context.Background(), got)
+				}, Timeout, Interval).Should(Succeed())
+			}
+
+			// The Secret is the only object named vpn that the operator writes through the client;
+			// status writes do not pass through countingClient.
+			Consistently(func() int { return writeCounter.writesTo(wgNamespace, wgName) },
+				"3s", Interval).Should(Equal(n), "a peer edit the agent does not read must not rewrite the server Secret")
+		})
+
+		It("reports AddressPoolExhausted and keeps serving the other peers when the pool is full", func() {
+			// A /30 has two allocatable addresses: .0 is the network and .1 the gateway.
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+				Spec:       v1alpha1.WireguardSpec{PeerCIDR: "10.8.0.0/30"},
+			})).Should(Succeed())
+
+			address := func(key types.NamespacedName) func() string {
+				return func() string {
+					got := &v1alpha1.WireguardPeer{}
+					if err := k8sClient.Get(context.Background(), key, got); err != nil {
+						return "get-failed"
+					}
+					return got.Status.Address
+				}
+			}
+
+			pool1Key := types.NamespacedName{Name: wgName + "-pool-1", Namespace: wgNamespace}
+			pool2Key := types.NamespacedName{Name: wgName + "-pool-2", Namespace: wgNamespace}
+			pool3Key := types.NamespacedName{Name: wgName + "-pool-3", Namespace: wgNamespace}
+			pool2PublicKey := newPublicKey()
+
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: pool1Key.Name, Namespace: pool1Key.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
+			})).Should(Succeed())
+			Eventually(address(pool1Key), Timeout, Interval).Should(Equal("10.8.0.2"))
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: pool2Key.Name, Namespace: pool2Key.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: pool2PublicKey},
+			})).Should(Succeed())
+			Eventually(address(pool2Key), Timeout, Interval).Should(Equal("10.8.0.3"))
+
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: pool3Key.Name, Namespace: pool3Key.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
+			})).Should(Succeed())
+			Eventually(func() string {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), pool3Key, got); err != nil {
+					return "get-failed"
+				}
+				c := meta.FindStatusCondition(got.Status.Conditions, ConditionReady)
+				if c == nil || c.Status != metav1.ConditionFalse {
+					return "no-ready-false-condition"
+				}
+				return c.Reason + "|" + got.Status.Status + "|" + got.Status.Address
+			}, Timeout, Interval).Should(Equal("AddressPoolExhausted|pending|"), "a peer the pool cannot serve is pending, not an error")
+
+			// The full pool must not stop the pass: an edit to a peer that holds an address still
+			// reaches state.json.
+			rotated := newPublicKey()
+			Eventually(func() error {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), pool1Key, got); err != nil {
+					return err
+				}
+				got.Spec.PublicKey = rotated
+				return k8sClient.Update(context.Background(), got)
+			}, Timeout, Interval).Should(Succeed())
+			Eventually(serverState(wgKey), Timeout, Interval).Should(SatisfyAll(
+				ContainSubstring(rotated), ContainSubstring(pool2PublicKey)))
+
+			Consistently(func() string {
+				wg := &v1alpha1.Wireguard{}
+				_ = k8sClient.Get(context.Background(), wgKey, wg)
+				return wg.Status.Status
+			}, "2s", Interval).Should(Equal("ready"), "a full pool must not degrade the server")
+		})
+
 		It("reverts a Deployment field changed outside the operator", func() {
 			created := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
