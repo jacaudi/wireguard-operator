@@ -475,23 +475,35 @@ func TestAddressUsable(t *testing.T) {
 	}
 }
 
-// failingStatusClient is a client whose every status write returns err; any other call panics on
-// the nil embedded client, which the test must not reach.
+// failingStatusClient is a client whose every status write returns err and, when wrote is set,
+// records the name of each peer written. List returns peers. Any other call panics on the nil
+// embedded client, which the test must not reach.
 type failingStatusClient struct {
 	client.Client
-	err error
+	err   error
+	peers []v1alpha1.WireguardPeer
+	wrote *[]string
+}
+
+func (c failingStatusClient) List(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
+	list.(*v1alpha1.WireguardPeerList).Items = c.peers
+	return nil
 }
 
 func (c failingStatusClient) Status() client.SubResourceWriter {
-	return failingStatusWriter{err: c.err}
+	return failingStatusWriter{err: c.err, wrote: c.wrote}
 }
 
 type failingStatusWriter struct {
 	client.SubResourceWriter
-	err error
+	err   error
+	wrote *[]string
 }
 
-func (w failingStatusWriter) Update(context.Context, client.Object, ...client.SubResourceUpdateOption) error {
+func (w failingStatusWriter) Update(_ context.Context, obj client.Object, _ ...client.SubResourceUpdateOption) error {
+	if w.wrote != nil {
+		*w.wrote = append(*w.wrote, obj.GetName())
+	}
 	return w.err
 }
 
@@ -526,6 +538,38 @@ func TestAdmitPeersStatusWriteErrors(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.wantNames) {
 				t.Errorf("admitPeers() admitted %v, want %v", got, tt.wantNames)
+			}
+		})
+	}
+}
+
+func TestMarkPeersWireguardNotFoundStatusWriteErrors(t *testing.T) {
+	gr := schema.GroupResource{Group: "vpn.wireguard-operator.io", Resource: "wireguardpeers"}
+	peers := []v1alpha1.WireguardPeer{
+		{ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: "default"}, Spec: v1alpha1.WireguardPeerSpec{WireguardRef: "vpn"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "second", Namespace: "default"}, Spec: v1alpha1.WireguardPeerSpec{WireguardRef: "vpn"}},
+	}
+	tests := []struct {
+		name      string
+		writeErr  error
+		wantWrote []string
+		wantErr   bool
+	}{
+		{"invalid object is skipped", apierrors.NewInvalid(schema.GroupKind{Group: gr.Group, Kind: "WireguardPeer"}, "first", nil), []string{"first", "second"}, false},
+		{"conflict is skipped", apierrors.NewConflict(gr, "first", errors.New("stale")), []string{"first", "second"}, false},
+		{"other errors are returned", apierrors.NewInternalError(errors.New("boom")), []string{"first"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var wrote []string
+			r := &WireguardReconciler{Client: failingStatusClient{err: tt.writeErr, peers: peers, wrote: &wrote}}
+
+			err := r.markPeersWireguardNotFound(t.Context(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "vpn"}})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("markPeersWireguardNotFound() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !reflect.DeepEqual(wrote, tt.wantWrote) {
+				t.Errorf("markPeersWireguardNotFound() wrote status of %v, want %v", wrote, tt.wantWrote)
 			}
 		})
 	}

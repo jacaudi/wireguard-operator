@@ -195,13 +195,6 @@ func (r *WireguardReconciler) admitPeers(ctx context.Context, peers []v1alpha1.W
 		// A skipped peer is this peer's retry, not the loop's: whoever won the write, or the
 		// deletion, also emits a watch event, which re-enqueues the Wireguard.
 		if err := r.markPeerNotReady(ctx, &peer, nr); err != nil && !skipPeerWrite(err) {
-			// Without CRD validation ratcheting (Kubernetes before 1.30, or the gate off) a peer stored
-			// with a pre-pattern key fails whole-object validation on any status write; that must not
-			// stop the server's sync.
-			if errors.IsInvalid(err) {
-				ctrllog.FromContext(ctx).Error(err, "Cannot record the status of a peer the server cannot admit", "peer", peer.Name)
-				continue
-			}
 			return nil, err
 		}
 	}
@@ -282,7 +275,15 @@ func (r *WireguardReconciler) markPeerNotReady(ctx context.Context, peer *v1alph
 		Message:            nr.ConditionMessage,
 		ObservedGeneration: peer.Generation,
 	})
-	return r.Status().Update(ctx, peer)
+	err := r.Status().Update(ctx, peer)
+	if errors.IsInvalid(err) {
+		// Without CRD validation ratcheting (Kubernetes before 1.30, or the gate off) a peer stored
+		// with a pre-pattern key fails whole-object validation on any status write; that must not
+		// stop the server's sync.
+		ctrllog.FromContext(ctx).Error(err, "Cannot record the status of a peer", "peer", peer.Name)
+		return nil
+	}
+	return err
 }
 
 // markPeersWireguardNotFound records WireguardNotFound on every peer in req.Namespace whose
