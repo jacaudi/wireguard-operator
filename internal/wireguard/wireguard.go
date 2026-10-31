@@ -356,8 +356,8 @@ func createPeersConfiguration(c *wgctrl.Client, state agent.State, iface string)
 
 		} else {
 			var desiredAllowed []net.IPNet
-			if peerState.Spec.Address != "" {
-				allowed, err := getIP(peerState.Spec.Address + "/32")
+			if peerState.Status.Address != "" {
+				allowed, err := getIP(peerState.Status.Address + "/32")
 				if err != nil {
 					return []wgtypes.PeerConfig{}, fmt.Errorf("peer %q: %w", peerState.Name, err)
 				}
@@ -383,7 +383,7 @@ func createPeersConfiguration(c *wgctrl.Client, state agent.State, iface string)
 			continue
 		}
 
-		if peer.Spec.Address == "" {
+		if peer.Status.Address == "" {
 			continue
 		}
 		key, err := wgtypes.ParseKey(peer.Spec.PublicKey)
@@ -397,7 +397,7 @@ func createPeersConfiguration(c *wgctrl.Client, state agent.State, iface string)
 		}
 
 		// create peer
-		allowed, err := getIP(peer.Spec.Address + "/32")
+		allowed, err := getIP(peer.Status.Address + "/32")
 		if err != nil {
 			return []wgtypes.PeerConfig{}, fmt.Errorf("peer %q: %w", peer.Name, err)
 		}

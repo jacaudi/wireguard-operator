@@ -139,7 +139,7 @@ func effectivePeerCIDR4(wg *v1alpha1.Wireguard) string {
 	return ipam.DefaultPeerCIDR4
 }
 
-// updateWireguardPeers allocates an address to every peer of this Wireguard that has a
+// updateWireguardPeers allocates a status.address to every peer of this Wireguard that has a
 // publicKey but no address, and marks each such peer Ready. A peer without a publicKey gets no
 // address: it is marked Ready=False with reason PublicKeyMissing.
 func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl.Request, wireguard *v1alpha1.Wireguard) error {
@@ -164,29 +164,30 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 			continue
 		}
 
-		if peer.Spec.Address == "" {
+		allocated := peer.Status.Address == ""
+		if allocated {
 			ip, err := r.ipAllocator.AllocateIP(cidr4, usedIps4)
 			if err != nil {
 				return err
 			}
-			peer.Spec.Address = ip
-			if err := r.Update(ctx, &peer); err != nil {
-				return err
-			}
+			peer.Status.Address = ip
+			// Reserved even if the write below is lost to a Conflict, so the next peer in this
+			// pass cannot take the same address.
 			usedIps4 = append(usedIps4, ip)
 		}
 
 		// A peer that was keyless still carries Ready=False/PublicKeyMissing; clear it.
-		if peer.Status.Status != v1alpha1.Ready || meta.FindStatusCondition(peer.Status.Conditions, ConditionReady) != nil {
-			peer.Status.Status = v1alpha1.Ready
-			peer.Status.Message = "Peer configured"
-			meta.RemoveStatusCondition(&peer.Status.Conditions, ConditionReady)
-			if err := r.Status().Update(ctx, &peer); err != nil {
-				if skipPeerWrite(err) {
-					continue
-				}
-				return err
+		if !allocated && peer.Status.Status == v1alpha1.Ready && meta.FindStatusCondition(peer.Status.Conditions, ConditionReady) == nil {
+			continue
+		}
+		peer.Status.Status = v1alpha1.Ready
+		peer.Status.Message = "Peer configured"
+		meta.RemoveStatusCondition(&peer.Status.Conditions, ConditionReady)
+		if err := r.Status().Update(ctx, &peer); err != nil {
+			if skipPeerWrite(err) {
+				continue
 			}
+			return err
 		}
 	}
 
@@ -200,6 +201,7 @@ func (r *WireguardReconciler) markPeerNotReady(ctx context.Context, peer *v1alph
 	}
 	peer.Status.Status = nr.Status
 	peer.Status.Message = nr.Message
+	peer.Status.Address = "" // a peer the server cannot admit releases its address
 	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
 		Type:               ConditionReady,
 		Status:             metav1.ConditionFalse,
@@ -232,7 +234,7 @@ func (r *WireguardReconciler) markPeersWireguardNotFound(ctx context.Context, re
 //+kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguards,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguards/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguards/finalizers,verbs=update
-// +kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguardpeers,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguardpeers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguardpeers/status,verbs=get;update;patch
 
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -263,7 +265,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// The Wireguard is gone: record WireguardNotFound on the peers that still name it.
-			log.Info("wireguard resource not found. Ignoring since object must be deleted")
+			log.Info("wireguard resource not found; marking its peers WireguardNotFound")
 			return ctrl.Result{}, r.markPeersWireguardNotFound(ctx, req)
 		}
 		// Error reading the object - requeue the request.
@@ -300,7 +302,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			continue
 		}
 
-		if peer.Spec.Address == "" {
+		if peer.Status.Address == "" {
 			continue
 		}
 

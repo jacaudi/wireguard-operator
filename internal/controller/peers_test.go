@@ -51,6 +51,18 @@ func TestWireguardForPeer(t *testing.T) {
 	}
 }
 
+func TestWireguardNotFound(t *testing.T) {
+	want := notReady{
+		Status:           "pending",
+		Message:          "Waiting for wireguard resource 'vpn' to be created",
+		Reason:           "WireguardNotFound",
+		ConditionMessage: "no Wireguard named vpn exists in namespace default",
+	}
+	if got := wireguardNotFound("vpn", "default"); !reflect.DeepEqual(got, want) {
+		t.Errorf("wireguardNotFound() = %+v, want %+v", got, want)
+	}
+}
+
 func TestPeerStatusMatches(t *testing.T) {
 	// matching returns a peer that records publicKeyMissing at generation 2.
 	matching := func() *v1alpha1.WireguardPeer {
@@ -90,6 +102,11 @@ func TestPeerStatusMatches(t *testing.T) {
 		{
 			name:   "other summary status",
 			mutate: func(p *v1alpha1.WireguardPeer) { p.Status.Status = v1alpha1.Ready },
+			want:   false,
+		},
+		{
+			name:   "address not yet released",
+			mutate: func(p *v1alpha1.WireguardPeer) { p.Status.Address = "10.8.0.9" },
 			want:   false,
 		},
 	}

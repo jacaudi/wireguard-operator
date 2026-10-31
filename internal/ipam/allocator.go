@@ -64,8 +64,8 @@ func (a *Allocator) GetUsedIPs(cidr string, peers *v1alpha1.WireguardPeerList) [
 	usedIPs := deriveReservedIPs(cidr)
 
 	for _, peer := range peers.Items {
-		if peer.Spec.Address != "" {
-			usedIPs = append(usedIPs, peer.Spec.Address)
+		if peer.Status.Address != "" {
+			usedIPs = append(usedIPs, peer.Status.Address)
 		}
 	}
 

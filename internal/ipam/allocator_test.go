@@ -107,11 +107,11 @@ func TestGetUsedIPs(t *testing.T) {
 				Items: []v1alpha1.WireguardPeer{
 					{
 						ObjectMeta: metav1.ObjectMeta{Name: "peer1"},
-						Spec:       v1alpha1.WireguardPeerSpec{Address: "10.8.0.2"},
+						Status:     v1alpha1.WireguardPeerStatus{Address: "10.8.0.2"},
 					},
 					{
 						ObjectMeta: metav1.ObjectMeta{Name: "peer2"},
-						Spec:       v1alpha1.WireguardPeerSpec{Address: "10.8.0.3"},
+						Status:     v1alpha1.WireguardPeerStatus{Address: "10.8.0.3"},
 					},
 				},
 			},
@@ -124,11 +124,11 @@ func TestGetUsedIPs(t *testing.T) {
 				Items: []v1alpha1.WireguardPeer{
 					{
 						ObjectMeta: metav1.ObjectMeta{Name: "peer1"},
-						Spec:       v1alpha1.WireguardPeerSpec{Address: "10.8.0.2"},
+						Status:     v1alpha1.WireguardPeerStatus{Address: "10.8.0.2"},
 					},
 					{
 						ObjectMeta: metav1.ObjectMeta{Name: "peer2"},
-						Spec:       v1alpha1.WireguardPeerSpec{Address: ""},
+						Status:     v1alpha1.WireguardPeerStatus{Address: ""},
 					},
 				},
 			},

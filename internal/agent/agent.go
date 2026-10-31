@@ -31,7 +31,7 @@ func IsStateValid(state State) error {
 	}
 
 	for i, peer := range state.Peers {
-		if peer.Spec.Address == "" {
+		if peer.Status.Address == "" {
 			return fmt.Errorf("peer with index %d does not have the address defined", i)
 		}
 

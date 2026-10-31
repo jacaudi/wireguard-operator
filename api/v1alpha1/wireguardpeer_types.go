@@ -22,8 +22,6 @@ import (
 
 // WireguardPeerSpec defines the desired state of WireguardPeer
 type WireguardPeerSpec struct {
-	// The address of the peer.
-	Address string `json:"address,omitempty"`
 	// The key used by the peer to authenticate with the wg server.
 	PublicKey string `json:"publicKey,omitempty"`
 	// The name of the Wireguard instance in k8s that the peer belongs to. The wg instance should be in the same namespace as the peer.
@@ -38,6 +36,9 @@ type WireguardPeerStatus struct {
 	Status string `json:"status,omitempty"`
 	// A string field that provides additional information about the status of the Wireguard peer. This could include error messages or other information that helps to diagnose issues with the peer.
 	Message string `json:"message,omitempty"`
+	// Address is the peer's IPv4 tunnel address, without a prefix length, allocated by the operator
+	// from the server's peerCIDR. The server routes <address>/32 to this peer.
+	Address string `json:"address,omitempty"`
 	// Conditions represent the latest available observations of the WireguardPeer's state.
 	// +optional
 	// +patchMergeKey=type

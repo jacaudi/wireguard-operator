@@ -46,9 +46,6 @@ spec:
           spec:
             description: The desired state of the peer.
             properties:
-              address:
-                description: The address of the peer.
-                type: string
               publicKey:
                 description: The key used by the peer to authenticate with the wg
                   server.
@@ -67,6 +64,11 @@ spec:
               peer. This includes fields like the current configuration and status
               of the peer.
             properties:
+              address:
+                description: |-
+                  Address is the peer's IPv4 tunnel address, without a prefix length, allocated by the operator
+                  from the server's peerCIDR. The server routes <address>/32 to this peer.
+                type: string
               conditions:
                 description: Conditions represent the latest available observations
                   of the WireguardPeer's state.
