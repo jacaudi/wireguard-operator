@@ -31,14 +31,15 @@ The kind tier runs the operator in a real cluster. Build the two images, then ru
 
 ```sh
 make docker-build-integration-test MANAGER_IMAGE=wireguard-operator/manager:test AGENT_IMAGE=wireguard-operator/agent:test
-make run-e2e E2E_KUBECONFIG=/tmp/wg-e2e-kubeconfig MANAGER_IMAGE=wireguard-operator/manager:test AGENT_IMAGE=wireguard-operator/agent:test
+make run-e2e MANAGER_IMAGE=wireguard-operator/manager:test AGENT_IMAGE=wireguard-operator/agent:test
 ```
 
 The tier needs Docker and `kubectl`. It creates a kind cluster named `wg-kind-test` and deletes it
-when the run ends. `E2E_KUBECONFIG` keeps kind from editing your kubeconfig; the default is
-`~/.kube/config`. `SKIP_CLEANUP=1` keeps the cluster for debugging, and the next run then fails at
-create until `bin/kind delete cluster --name wg-kind-test` removes it. CI runs these two targets as
-the required `e2e` stage.
+when the run ends. The default `E2E_KUBECONFIG` is a scratch file, `/tmp/wg-e2e-kubeconfig`, so
+kind never edits `~/.kube/config`; set it to `~/.kube/config` to merge the cluster into your config.
+`SKIP_CLEANUP=1` keeps the cluster for debugging, and the next run then fails at create until
+`KUBECONFIG=/tmp/wg-e2e-kubeconfig bin/kind delete cluster --name wg-kind-test` removes it. CI runs
+these two targets as the required `e2e` stage.
 
 ## Generated artifacts
 

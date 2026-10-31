@@ -130,15 +130,16 @@ docker-build-integration-test:  docker-build-manager
 	$(MAKE) docker-build-manager
 
 
-# Point at a scratch file to keep kind from editing your kubeconfig.
-E2E_KUBECONFIG ?= $(HOME)/.kube/config
+# kind writes its context here, never into ~/.kube/config. Set
+# E2E_KUBECONFIG=~/.kube/config to merge the test cluster into your own config.
+E2E_KUBECONFIG ?= /tmp/wg-e2e-kubeconfig
 run-e2e: $(KIND)
 	@for f in $(PINNED_AT_BUILD); do cp "$$f" "$$f.pre-build"; done
 	@trap 'for f in $(PINNED_AT_BUILD); do mv "$$f.pre-build" "$$f"; done' EXIT; \
 	  AGENT_IMAGE=${AGENT_IMAGE} $(MAKE) update-agent-image && \
 	  MANAGER_IMAGE=${MANAGER_IMAGE} $(MAKE) update-manager-image && \
 	  $(KUSTOMIZE) build config/default > release_it.yaml
-	KUBECONFIG=$(E2E_KUBECONFIG) KUBE_CONFIG=$(E2E_KUBECONFIG) KIND_BIN=${KIND} WIREGUARD_OPERATOR_RELEASE_PATH="../../release_it.yaml" AGENT_IMAGE=${AGENT_IMAGE} MANAGER_IMAGE=${MANAGER_IMAGE} SKIP_CLEANUP=${SKIP_CLEANUP} go test -tags=e2e ./internal/it/ -v -count=1
+	KUBECONFIG=$(E2E_KUBECONFIG) KUBE_CONFIG=$(E2E_KUBECONFIG) KIND_BIN=${KIND} WIREGUARD_OPERATOR_RELEASE_PATH="../../release_it.yaml" AGENT_IMAGE=${AGENT_IMAGE} MANAGER_IMAGE=${MANAGER_IMAGE} SKIP_CLEANUP=${SKIP_CLEANUP} go test -tags=e2e ./internal/it/ -v -count=1 -timeout 25m
 
 docker-push: ## Push docker image with the manager.
 	docker push ${IMG}
