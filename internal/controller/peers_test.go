@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"reflect"
 	"testing"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
 	"github.com/jacaudi/wireguard-operator/internal/agent"
 
+	wgtypes "golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -244,4 +246,119 @@ func TestAddressPoolExhausted(t *testing.T) {
 	if got := addressPoolExhausted("10.8.0.0/30"); !reflect.DeepEqual(got, want) {
 		t.Errorf("addressPoolExhausted() = %+v, want %+v", got, want)
 	}
+}
+
+// publicKeyForTest returns a freshly generated WireGuard public key in its canonical form.
+func publicKeyForTest(t *testing.T) string {
+	t.Helper()
+	priv, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return priv.PublicKey().String()
+}
+
+func TestAdmissionProblem(t *testing.T) {
+	good := publicKeyForTest(t)
+	// ParseKey accepts a key whose last character carries non-zero padding bits, but the agent
+	// matches peers by the canonical string, so it must not be admitted.
+	nonCanonical := good[:42] + "B="
+	if _, err := wgtypes.ParseKey(nonCanonical); err != nil {
+		t.Fatalf("ParseKey(%q) = %v; the case needs a key ParseKey accepts", nonCanonical, err)
+	}
+
+	tests := []struct {
+		name      string
+		publicKey string
+		want      notReady
+		wantOK    bool
+	}{
+		{name: "empty key", publicKey: "", want: publicKeyMissing, wantOK: true},
+		{name: "not base64 of 32 bytes", publicKey: "not-a-key", want: invalidPublicKey, wantOK: true},
+		{name: "non-canonical padding bits", publicKey: nonCanonical, want: invalidPublicKey, wantOK: true},
+		{name: "canonical key", publicKey: good, want: notReady{}, wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			peer := &v1alpha1.WireguardPeer{Spec: v1alpha1.WireguardPeerSpec{WireguardRef: "vpn", PublicKey: tt.publicKey}}
+			got, ok := admissionProblem(peer)
+			if ok != tt.wantOK || !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("admissionProblem(%q) = (%+v, %v), want (%+v, %v)", tt.publicKey, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+// peerCIDRCases are the inputs shared by TestValidatePeerCIDR and the fuzz seed corpus.
+var peerCIDRCases = []struct {
+	cidr    string
+	wantErr bool
+}{
+	{"10.8.0.0/24", false},
+	{"10.9.0.0/16", false},
+	{"192.168.4.0/30", false},
+	{"10.8.0.5/24", true},
+	{"10.8.0.0/31", true},
+	{"10.8.0.0/32", true},
+	{"fd00::/64", true},
+	{"10.8.0.0", true},
+	{"garbage", true},
+	{"", true},
+}
+
+func TestValidatePeerCIDR(t *testing.T) {
+	for _, tt := range peerCIDRCases {
+		t.Run(tt.cidr, func(t *testing.T) {
+			err := validatePeerCIDR(tt.cidr)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validatePeerCIDR(%q) = %v, wantErr %v", tt.cidr, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidatePeerCIDRMessages(t *testing.T) {
+	// parseErr is netip's own text for a string that is not a prefix, which the message embeds.
+	parseErr := func(s string) string {
+		_, err := netip.ParsePrefix(s)
+		if err == nil {
+			t.Fatalf("netip.ParsePrefix(%q) succeeded; the case needs a non-prefix", s)
+		}
+		return err.Error()
+	}
+	tests := []struct {
+		cidr string
+		want string
+	}{
+		{"10.8.0.5/24", `peerCIDR "10.8.0.5/24" has host bits set; use 10.8.0.0/24`},
+		{"10.8.0.0/31", `peerCIDR "10.8.0.0/31" leaves no address for a peer; use /30 or shorter`},
+		{"fd00::/64", `peerCIDR "fd00::/64" is not an IPv4 prefix`},
+		{"10.8.0.0", `peerCIDR "10.8.0.0" is not a CIDR: ` + parseErr("10.8.0.0")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cidr, func(t *testing.T) {
+			err := validatePeerCIDR(tt.cidr)
+			if err == nil || err.Error() != tt.want {
+				t.Errorf("validatePeerCIDR(%q) = %v, want %q", tt.cidr, err, tt.want)
+			}
+		})
+	}
+}
+
+func FuzzValidatePeerCIDR(f *testing.F) {
+	for _, tt := range peerCIDRCases {
+		f.Add(tt.cidr)
+	}
+	f.Fuzz(func(t *testing.T, cidr string) {
+		if validatePeerCIDR(cidr) != nil {
+			return
+		}
+		p, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			t.Fatalf("validatePeerCIDR(%q) = nil, but netip.ParsePrefix fails: %v", cidr, err)
+		}
+		if !p.Addr().Is4() || p.Bits() > 30 || p != p.Masked() {
+			t.Errorf("validatePeerCIDR(%q) = nil for %v: want an IPv4 prefix of /30 or shorter with no host bits", cidr, p)
+		}
+	})
 }
