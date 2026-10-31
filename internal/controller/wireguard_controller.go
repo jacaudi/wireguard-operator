@@ -417,7 +417,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			}
 
 			pods := &corev1.PodList{}
-			if err := r.List(ctx, pods, client.MatchingLabels{"app": "wireguard", "instance": wireguard.Name}); err != nil {
+			if err := r.List(ctx, pods, client.InNamespace(wireguard.Namespace), client.MatchingLabels{"app": "wireguard", "instance": wireguard.Name}); err != nil {
 				log.Error(err, "Failed to fetch list of pods")
 				return ctrl.Result{}, err
 			}

@@ -1289,6 +1289,51 @@ var _ = Describe("wireguard controller", func() {
 				HaveKeyWithValue(ConditionDegraded, metav1.ConditionFalse),
 			), "fixing the peerCIDR must clear Degraded")
 		})
+
+		It("nudges only server pods in the Wireguard's namespace", func() {
+			const otherNS = "nudge-other"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: otherNS}}
+			if err := k8sClient.Create(context.Background(), ns); err != nil {
+				Expect(client.IgnoreAlreadyExists(err)).Should(Succeed())
+			}
+			// A pod that shares the server's labels but lives in another namespace.
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "other-server",
+					Namespace: otherNS,
+					Labels:    map[string]string{"app": "wireguard", "instance": wgName},
+				},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "busybox"}}},
+			}
+			Expect(k8sClient.Create(context.Background(), pod)).Should(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(context.Background(), pod)
+				_ = k8sClient.Delete(context.Background(), ns)
+			}()
+
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			})).Should(Succeed())
+			// The nudge runs only once the server Secret exists, so wait for it to settle.
+			Eventually(serverState(wgKey), Timeout, Interval).ShouldNot(BeEmpty())
+
+			// A keyed peer changes state.json, which nudges the pods that serve this Wireguard.
+			publicKey := newPublicKey()
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: wgName + "-nudge-peer", Namespace: wgNamespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: publicKey},
+			})).Should(Succeed())
+			Eventually(serverState(wgKey), Timeout, Interval).Should(ContainSubstring(publicKey))
+
+			podKey := types.NamespacedName{Name: pod.Name, Namespace: otherNS}
+			Consistently(func() string {
+				got := &corev1.Pod{}
+				if err := k8sClient.Get(context.Background(), podKey, got); err != nil {
+					return "get-failed"
+				}
+				return got.Annotations["wgConfigLastUpdated"]
+			}, "3s", Interval).Should(BeEmpty(), "a pod in another namespace must not be nudged")
+		})
 	})
 
 })
