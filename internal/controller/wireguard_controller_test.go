@@ -487,91 +487,119 @@ var _ = Describe("wireguard controller", func() {
 			}, Timeout, Interval).Should(Equal("123Mi"))
 		})
 
-		It("rejects a peer with a duplicate address on the same wireguardRef", func() {
-			wgServer := &v1alpha1.Wireguard{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      wgKey.Name,
-					Namespace: wgKey.Namespace,
-				},
-			}
-			Expect(k8sClient.Create(context.Background(), wgServer)).Should(Succeed())
-
-			serviceName := wgKey.Name + "-svc"
-			serviceKey := types.NamespacedName{
-				Namespace: wgKey.Namespace,
-				Name:      serviceName,
-			}
-			Eventually(func() error {
-				svc := &corev1.Service{}
-				return k8sClient.Get(context.Background(), serviceKey, svc)
-			}, Timeout, Interval).Should(Succeed())
-
-			// Wait for server to be ready
+		It("reconciles a new peer through the peer watch and never owns it", func() {
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			})).Should(Succeed())
 			Eventually(func() string {
 				wg := &v1alpha1.Wireguard{}
 				_ = k8sClient.Get(context.Background(), wgKey, wg)
 				return wg.Status.Status
 			}, Timeout, Interval).Should(Equal("ready"))
 
-			// Create first peer with an explicit address
-			peer1Key := types.NamespacedName{
-				Name:      wgName + "-peer-dup1",
-				Namespace: wgNamespace,
-			}
-			peer1 := &v1alpha1.WireguardPeer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      peer1Key.Name,
-					Namespace: peer1Key.Namespace,
-				},
-				Spec: v1alpha1.WireguardPeerSpec{
-					WireguardRef: wgName,
-					Address:      "10.8.0.22",
-					PublicKey:    newPublicKey(),
-				},
-			}
-			Expect(k8sClient.Create(context.Background(), peer1)).Should(Succeed())
+			publicKey := newPublicKey()
+			peerKey := types.NamespacedName{Name: wgName + "-watched-peer", Namespace: wgNamespace}
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: peerKey.Name, Namespace: peerKey.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: publicKey},
+			})).Should(Succeed())
 
-			// Wait for first peer to become ready
 			Eventually(func() string {
-				p := &v1alpha1.WireguardPeer{}
-				_ = k8sClient.Get(context.Background(), peer1Key, p)
-				return p.Status.Status
-			}, Timeout, Interval).Should(Equal("ready"))
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
+					return ""
+				}
+				return got.Spec.Address
+			}, Timeout, Interval).Should(Equal("10.8.0.2"))
+			Eventually(serverState(wgKey), Timeout, Interval).Should(ContainSubstring(publicKey))
 
-			// Create second peer with the same address
-			peer2Key := types.NamespacedName{
-				Name:      wgName + "-peer-dup2",
-				Namespace: wgNamespace,
+			Consistently(func() int {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
+					return -1
+				}
+				return len(got.OwnerReferences)
+			}, "2s", Interval).Should(BeZero(), "the Wireguard watches its peers; it must not own them")
+		})
+
+		It("reports WireguardNotFound until the peer's Wireguard exists", func() {
+			peerKey := types.NamespacedName{Name: wgName + "-early-peer", Namespace: wgNamespace}
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: peerKey.Name, Namespace: peerKey.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
+			})).Should(Succeed())
+
+			// notFound summarises the peer's WireguardNotFound state, or says what it found instead.
+			notFound := func() string {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
+					return "get-failed"
+				}
+				c := meta.FindStatusCondition(got.Status.Conditions, ConditionReady)
+				if c == nil || c.Status != metav1.ConditionFalse {
+					return "no-ready-false-condition"
+				}
+				return c.Reason + "|" + got.Status.Status + "|" + got.Status.Message
 			}
-			peer2 := &v1alpha1.WireguardPeer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      peer2Key.Name,
-					Namespace: peer2Key.Namespace,
-				},
-				Spec: v1alpha1.WireguardPeerSpec{
-					WireguardRef: wgName,
-					Address:      "10.8.0.22",
-					PublicKey:    newPublicKey(),
-				},
+			const want = "WireguardNotFound|pending|Waiting for wireguard resource 'vpn' to be created"
+			Eventually(notFound, Timeout, Interval).Should(Equal(want))
+
+			wg := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
 			}
-			Expect(k8sClient.Create(context.Background(), peer2)).Should(Succeed())
-
-			// Second peer should be rejected with an error status
+			Expect(k8sClient.Create(context.Background(), wg)).Should(Succeed())
 			Eventually(func() string {
-				p := &v1alpha1.WireguardPeer{}
-				_ = k8sClient.Get(context.Background(), peer2Key, p)
-				return p.Status.Status
-			}, Timeout, Interval).Should(Equal("error"))
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
+					return "get-failed"
+				}
+				if c := meta.FindStatusCondition(got.Status.Conditions, ConditionReady); c != nil {
+					return "condition Ready=" + string(c.Status) + "/" + c.Reason
+				}
+				return got.Status.Status + "|" + got.Spec.Address
+			}, Timeout, Interval).Should(Equal(v1alpha1.Ready+"|10.8.0.2"), "once the server exists the peer is admitted and the condition cleared")
 
-			// Error message should mention the duplicate address and the conflicting peer
-			Eventually(func() string {
-				p := &v1alpha1.WireguardPeer{}
-				_ = k8sClient.Get(context.Background(), peer2Key, p)
-				return p.Status.Message
-			}, Timeout, Interval).Should(SatisfyAll(
-				ContainSubstring("Duplicate address 10.8.0.22"),
-				ContainSubstring(peer1Key.Name),
-			))
+			Expect(k8sClient.Delete(context.Background(), wg)).Should(Succeed())
+			Eventually(func() bool {
+				return apierrors.IsNotFound(k8sClient.Get(context.Background(), wgKey, &v1alpha1.Wireguard{}))
+			}, Timeout, Interval).Should(BeTrue())
+			Eventually(notFound, Timeout, Interval).Should(Equal(want), "deleting the Wireguard must report its peers WireguardNotFound again")
+		})
+
+		It("moves a peer to the server its wireguardRef names", func() {
+			wg2Key := types.NamespacedName{Name: wgName + "2", Namespace: wgNamespace}
+			for _, key := range []types.NamespacedName{wgKey, wg2Key} {
+				Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+					ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+				})).Should(Succeed())
+			}
+			for _, key := range []types.NamespacedName{wgKey, wg2Key} {
+				Eventually(func() string {
+					wg := &v1alpha1.Wireguard{}
+					_ = k8sClient.Get(context.Background(), key, wg)
+					return wg.Status.Status
+				}, Timeout, Interval).Should(Equal("ready"))
+			}
+
+			publicKey := newPublicKey()
+			peerKey := types.NamespacedName{Name: wgName + "-moving-peer", Namespace: wgNamespace}
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: peerKey.Name, Namespace: peerKey.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: publicKey},
+			})).Should(Succeed())
+			Eventually(serverState(wgKey), Timeout, Interval).Should(ContainSubstring(publicKey))
+
+			Eventually(func() error {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
+					return err
+				}
+				got.Spec.WireguardRef = wg2Key.Name
+				return k8sClient.Update(context.Background(), got)
+			}, Timeout, Interval).Should(Succeed())
+
+			Eventually(serverState(wgKey), Timeout, Interval).ShouldNot(ContainSubstring(publicKey), "the old server drops the peer")
+			Eventually(serverState(wg2Key), Timeout, Interval).Should(ContainSubstring(publicKey), "the new server admits the peer")
 		})
 
 		It("reverts a Deployment field changed outside the operator", func() {
@@ -890,4 +918,16 @@ func newPublicKey() string {
 	key, err := wgtypes.GeneratePrivateKey()
 	Expect(err).ShouldNot(HaveOccurred())
 	return key.PublicKey().String()
+}
+
+// serverState returns a poller for the state.json the Wireguard named by key hands its agent, or
+// "" while the Secret does not exist.
+func serverState(key types.NamespacedName) func() string {
+	return func() string {
+		secret := &corev1.Secret{}
+		if err := k8sClient.Get(context.Background(), key, secret); err != nil {
+			return ""
+		}
+		return string(secret.Data["state.json"])
+	}
 }

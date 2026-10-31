@@ -485,6 +485,23 @@ rules:
   - vpn.wireguard-operator.io
   resources:
   - wireguardpeers
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - vpn.wireguard-operator.io
+  resources:
+  - wireguardpeers/status
+  - wireguards/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - vpn.wireguard-operator.io
+  resources:
   - wireguards
   verbs:
   - create
@@ -497,18 +514,8 @@ rules:
 - apiGroups:
   - vpn.wireguard-operator.io
   resources:
-  - wireguardpeers/finalizers
   - wireguards/finalizers
   verbs:
-  - update
-- apiGroups:
-  - vpn.wireguard-operator.io
-  resources:
-  - wireguardpeers/status
-  - wireguards/status
-  verbs:
-  - get
-  - patch
   - update
 ---
 apiVersion: rbac.authorization.k8s.io/v1

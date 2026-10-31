@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -152,10 +153,10 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 
 	for _, peer := range peers.Items {
 		if peer.Spec.PublicKey == "" {
-			if err := r.markPeerPublicKeyMissing(ctx, &peer); err != nil {
-				// A conflict is this peer's retry, not the loop's: whoever won the write
-				// also emits a watch event, which re-enqueues the owning Wireguard.
-				if errors.IsConflict(err) {
+			if err := r.markPeerNotReady(ctx, &peer, publicKeyMissing); err != nil {
+				// A skipped peer is this peer's retry, not the loop's: whoever won the write,
+				// or the deletion, also emits a watch event, which re-enqueues the Wireguard.
+				if skipPeerWrite(err) {
 					continue
 				}
 				return err
@@ -181,7 +182,7 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 			peer.Status.Message = "Peer configured"
 			meta.RemoveStatusCondition(&peer.Status.Conditions, ConditionReady)
 			if err := r.Status().Update(ctx, &peer); err != nil {
-				if errors.IsConflict(err) {
+				if skipPeerWrite(err) {
 					continue
 				}
 				return err
@@ -192,29 +193,47 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 	return nil
 }
 
-// markPeerPublicKeyMissing records that peer cannot be admitted by the server until it carries a
-// publicKey. It writes only when the recorded status differs, so repeated reconciles are no-ops.
-func (r *WireguardReconciler) markPeerPublicKeyMissing(ctx context.Context, peer *v1alpha1.WireguardPeer) error {
-	const reason = "PublicKeyMissing"
-	if c := meta.FindStatusCondition(peer.Status.Conditions, ConditionReady); c != nil && c.Reason == reason &&
-		c.Status == metav1.ConditionFalse && peer.Status.Status == v1alpha1.Pending {
+// markPeerNotReady records nr on peer with one status write, skipped when peerStatusMatches.
+func (r *WireguardReconciler) markPeerNotReady(ctx context.Context, peer *v1alpha1.WireguardPeer, nr notReady) error {
+	if peerStatusMatches(peer, nr) {
 		return nil
 	}
-	peer.Status.Status = v1alpha1.Pending
-	peer.Status.Message = "Waiting for spec.publicKey"
+	peer.Status.Status = nr.Status
+	peer.Status.Message = nr.Message
 	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
 		Type:               ConditionReady,
 		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            "spec.publicKey is empty, so the server cannot admit this peer",
+		Reason:             nr.Reason,
+		Message:            nr.ConditionMessage,
 		ObservedGeneration: peer.Generation,
 	})
 	return r.Status().Update(ctx, peer)
 }
 
+// markPeersWireguardNotFound records WireguardNotFound on every peer in req.Namespace whose
+// wireguardRef is req.Name.
+func (r *WireguardReconciler) markPeersWireguardNotFound(ctx context.Context, req ctrl.Request) error {
+	peers, err := r.getWireguardPeers(ctx, req)
+	if err != nil {
+		return err
+	}
+	nr := wireguardNotFound(req.Name, req.Namespace)
+	for i := range peers.Items {
+		if err := r.markPeerNotReady(ctx, &peers.Items[i], nr); err != nil {
+			if skipPeerWrite(err) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 //+kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguards,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguards/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguards/finalizers,verbs=update
+// +kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguardpeers,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=vpn.wireguard-operator.io,resources=wireguardpeers/status,verbs=get;update;patch
 
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -243,11 +262,9 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	err := r.Get(ctx, req.NamespacedName, wireguard)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Request object not found, could have been deleted after reconcile request.
-			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
-			// Return and don't requeue
+			// The Wireguard is gone: record WireguardNotFound on the peers that still name it.
 			log.Info("wireguard resource not found. Ignoring since object must be deleted")
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, r.markPeersWireguardNotFound(ctx, req)
 		}
 		// Error reading the object - requeue the request.
 		log.Error(err, "Failed to get wireguard")
@@ -441,7 +458,7 @@ func (r *WireguardReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Wireguard{}).
-		Owns(&v1alpha1.WireguardPeer{}).
+		Watches(&v1alpha1.WireguardPeer{}, handler.EnqueueRequestsFromMapFunc(wireguardForPeer)).
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Secret{}).
