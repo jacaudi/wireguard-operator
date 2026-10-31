@@ -20,6 +20,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
+	"strconv"
 	"time"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
@@ -78,7 +80,15 @@ func (r *WireguardReconciler) getWireguardPeers(ctx context.Context, req ctrl.Re
 	return relatedPeers, nil
 }
 
-func (r *WireguardReconciler) updateStatus(ctx context.Context, req ctrl.Request, cond metav1.Condition) error {
+// serverIdentity is what a client needs to reach this server.
+type serverIdentity struct {
+	Endpoint  string
+	PublicKey string
+}
+
+// updateStatus records cond. A non-nil identity sets status.endpoint and status.publicKey in the
+// same write; nil leaves them as they are.
+func (r *WireguardReconciler) updateStatus(ctx context.Context, req ctrl.Request, cond metav1.Condition, identity *serverIdentity) error {
 	latest := &v1alpha1.Wireguard{}
 	if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
 		if errors.IsNotFound(err) {
@@ -119,6 +129,10 @@ func (r *WireguardReconciler) updateStatus(ctx context.Context, req ctrl.Request
 		latest.Status.Status = v1alpha1.Pending
 	}
 	latest.Status.Message = cond.Message
+	if identity != nil {
+		latest.Status.Endpoint = identity.Endpoint
+		latest.Status.PublicKey = identity.PublicKey
+	}
 
 	if err := r.Status().Update(ctx, latest); err != nil {
 		if errors.IsNotFound(err) || errors.IsConflict(err) {
@@ -139,8 +153,9 @@ func effectivePeerCIDR4(wg *v1alpha1.Wireguard) string {
 }
 
 // reconcilePeers lists the peers of wg, records a not-ready status on those the server cannot
-// admit, allocates and readies the rest, and returns the peers admitted in this pass, as written:
-// keyed and holding a status.address.
+// admit, clears unusable addresses, releases the addresses of dedupe losers (AddressConflict),
+// allocates and readies the rest, and returns the peers admitted in this pass, as written: keyed
+// and holding a status.address.
 func (r *WireguardReconciler) reconcilePeers(ctx context.Context, req ctrl.Request, wg *v1alpha1.Wireguard) ([]v1alpha1.WireguardPeer, error) {
 	peers, err := r.getWireguardPeers(ctx, req)
 	if err != nil {
@@ -259,7 +274,7 @@ func (r *WireguardReconciler) markPeerNotReady(ctx context.Context, peer *v1alph
 	}
 	peer.Status.Status = nr.Status
 	peer.Status.Message = nr.Message
-	peer.Status.Address = "" // a peer the server cannot admit releases its address
+	peer.Status.Address = "" // a not-ready peer (not admitted, or a dedupe loser) releases its address
 	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
 		Type:               ConditionReady,
 		Status:             metav1.ConditionFalse,
@@ -334,7 +349,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log.Info("processing " + wireguard.Name)
 
 	if wireguard.Status.Status == "" {
-		err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "FetchingStatus", Message: "Fetching Wireguard status"})
+		err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "FetchingStatus", Message: "Fetching Wireguard status"}, nil)
 
 		if err != nil {
 			return ctrl.Result{}, err
@@ -346,7 +361,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// A peerCIDR the allocator cannot serve is permanent until the spec changes, and that edit
 	// triggers the next reconcile, so report it and return no error; only a failed status write is retried.
 	if err := validatePeerCIDR(effectivePeerCIDR4(wireguard)); err != nil {
-		return ctrl.Result{}, r.updateStatus(ctx, req, metav1.Condition{Type: ConditionDegraded, Status: metav1.ConditionTrue, Reason: "InvalidPeerCIDR", Message: err.Error()})
+		return ctrl.Result{}, r.updateStatus(ctx, req, metav1.Condition{Type: ConditionDegraded, Status: metav1.ConditionTrue, Reason: "InvalidPeerCIDR", Message: err.Error()}, nil)
 	}
 
 	// service
@@ -477,7 +492,11 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.failDegraded(ctx, req, err, "DeploymentApplyFailed", "Failed to apply deployment")
 	}
 
-	err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: "Active", Message: "VPN is active!"})
+	// desiredSvc holds the apiserver's response to the apply, so it carries the assigned ClusterIP.
+	err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: "Active", Message: "VPN is active!"}, &serverIdentity{
+		Endpoint:  net.JoinHostPort(desiredSvc.Spec.ClusterIP, strconv.Itoa(resources.WireguardPort)),
+		PublicKey: string(secret.Data["publicKey"]),
+	})
 
 	if err != nil {
 		return ctrl.Result{}, err

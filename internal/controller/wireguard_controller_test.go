@@ -823,7 +823,7 @@ var _ = Describe("wireguard controller", func() {
 					return nil
 				}
 				var state agent.State
-				if err := json.Unmarshal(secret.Data["state.json"], &state); err != nil {
+				if err := json.Unmarshal(secret.Data["state.json"], &state); err != nil || len(state.Peers) != 2 {
 					return nil
 				}
 				var addresses []string
@@ -958,6 +958,44 @@ var _ = Describe("wireguard controller", func() {
 				}
 				return svc.Spec.ClusterIP == first.Spec.ClusterIP
 			}, "3s", Interval).Should(BeTrue(), "the server-assigned clusterIP must survive apply")
+		})
+
+		It("publishes the server's endpoint and public key in status", func() {
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			})).Should(Succeed())
+
+			serviceKey := types.NamespacedName{Name: wgName + "-svc", Namespace: wgNamespace}
+			svc := &corev1.Service{}
+			Eventually(func() string {
+				if err := k8sClient.Get(context.Background(), serviceKey, svc); err != nil {
+					return ""
+				}
+				return svc.Spec.ClusterIP
+			}, Timeout, Interval).ShouldNot(BeEmpty(), "the apiserver should have allocated a clusterIP")
+
+			secret := &corev1.Secret{}
+			Eventually(func() string {
+				if err := k8sClient.Get(context.Background(), wgKey, secret); err != nil {
+					return ""
+				}
+				return string(secret.Data["publicKey"])
+			}, Timeout, Interval).ShouldNot(BeEmpty(), "the server Secret should carry a public key")
+
+			Eventually(func() string {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return ""
+				}
+				return wg.Status.Endpoint
+			}, Timeout, Interval).Should(Equal(svc.Spec.ClusterIP + ":51820"))
+			Eventually(func() string {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
+					return ""
+				}
+				return wg.Status.PublicKey
+			}, Timeout, Interval).Should(Equal(string(secret.Data["publicKey"])))
 		})
 
 		It("adopts a Deployment written before Server-Side Apply, so a later removal converges", func() {

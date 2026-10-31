@@ -112,7 +112,7 @@ func (r *WireguardReconciler) failDegraded(
 		Status:  metav1.ConditionTrue,
 		Reason:  reason,
 		Message: err.Error(),
-	}); serr != nil {
+	}, nil); serr != nil {
 		log.Error(serr, "failed to record Degraded condition", "reason", reason)
 	}
 	return ctrl.Result{}, err
