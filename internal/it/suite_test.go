@@ -87,9 +87,10 @@ func waitForDeploymentTobeReady(name string, namespace string) {
 // (#45), then until its Deployment has rolled out.
 //
 // The CR's Ready condition is the only signal that the controller has seen a spec: the condition
-// records the generation it was written for, so Ready=True with an observedGeneration that has
-// caught up with metadata.generation means the controller acted on this spec. The Deployment's own
-// generation cannot show that; it does not move until the controller applies the change.
+// records the generation of the object updateStatus last re-read, so Ready=True with an
+// observedGeneration that has caught up with metadata.generation means the controller acted on this
+// spec. The Deployment's own generation cannot show that; it does not move until the controller
+// applies the change.
 //
 // The barrier is not exact. updateStatus stamps the generation of the object it re-reads, not the
 // generation the reconcile rendered, so a patch landing mid-reconcile can still race.
@@ -97,20 +98,18 @@ func waitForDeploymentTobeReady(name string, namespace string) {
 // The condition type is the literal "Ready": this suite is an external client of the CRD's
 // condition contract and does not import internal/controller.
 func WaitForWireguardToBeReady(name string, namespace string) {
-	Eventually(func() bool {
+	Eventually(func(g Gomega) {
 		wgKey := types.NamespacedName{
 			Namespace: namespace,
 			Name:      name,
 		}
 		wg := &v1alpha1.Wireguard{}
-		if err := k8sClient.Get(context.Background(), wgKey, wg); err != nil {
-			return false
-		}
+		g.Expect(k8sClient.Get(context.Background(), wgKey, wg)).To(Succeed())
 		ready := meta.FindStatusCondition(wg.Status.Conditions, "Ready")
-		return ready != nil &&
-			ready.Status == metav1.ConditionTrue &&
-			ready.ObservedGeneration >= wg.Generation
-	}, Timeout, Interval).Should(BeTrue())
+		g.Expect(ready).NotTo(BeNil(), "Wireguard %s/%s has no Ready condition; conditions: %+v", namespace, name, wg.Status.Conditions)
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue), "Ready=%s reason=%s: %s", ready.Status, ready.Reason, ready.Message)
+		g.Expect(ready.ObservedGeneration).To(BeNumerically(">=", wg.Generation), "Ready observedGeneration %d is behind generation %d", ready.ObservedGeneration, wg.Generation)
+	}, Timeout, Interval).Should(Succeed())
 
 	waitForDeploymentTobeReady(name+"-dep", namespace)
 }

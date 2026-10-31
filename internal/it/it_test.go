@@ -43,23 +43,23 @@ spec:
 		// The controller allocated the peer an address from the server's peerCIDR.
 		Eventually(func(g Gomega) {
 			address, err := KubectlGet("wireguardpeer/peer20", TestNamespace, "{.status.address}")
-			g.Expect(err).NotTo(HaveOccurred(), address)
+			g.Expect(err).NotTo(HaveOccurred(), "kubectl get wireguardpeer/peer20: %s", address)
 			g.Expect(address).To(Equal("10.8.0.2"))
 		}, Timeout, Interval).Should(Succeed())
 
 		// The server published the address a client dials: the Service's ClusterIP and WireGuard port.
 		Eventually(func(g Gomega) {
 			endpoint, err := KubectlGet("wireguard/vpn", TestNamespace, "{.status.endpoint}")
-			g.Expect(err).NotTo(HaveOccurred(), endpoint)
+			g.Expect(err).NotTo(HaveOccurred(), "kubectl get wireguard/vpn: %s", endpoint)
 			clusterIP, err := KubectlGet("service/vpn-svc", TestNamespace, "{.spec.clusterIP}")
-			g.Expect(err).NotTo(HaveOccurred(), clusterIP)
+			g.Expect(err).NotTo(HaveOccurred(), "kubectl get service/vpn-svc: %s", clusterIP)
 			g.Expect(endpoint).To(Equal(clusterIP + ":51820"))
 		}, Timeout, Interval).Should(Succeed())
 
 		// The agent's wg0 admitted the peer, so the controller's state reached the agent.
 		Eventually(func(g Gomega) {
 			peers, err := KubectlExec("vpn-dep", "agent", TestNamespace, "wg", "show", "wg0", "peers")
-			g.Expect(err).NotTo(HaveOccurred(), peers)
+			g.Expect(err).NotTo(HaveOccurred(), "wg show wg0 peers in vpn-dep: %s", peers)
 			g.Expect(peers).To(ContainSubstring("PLA+byaz6a5jbnioieB4NEELG7sdq7Wk+3u9Kw0s6zk="))
 		}, Timeout, Interval).Should(Succeed())
 	})
