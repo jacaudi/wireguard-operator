@@ -57,6 +57,73 @@ This is first release since forking from [devopsland/wireguard-operator](https:/
 
 * add liveness and readiness probe ([#205](https://github.com/jodevsa/wireguard-operator/issues/205)) ([3f57376](https://github.com/jodevsa/wireguard-operator/commit/3f573760194e52b5afe232e8efb9e08cee75329e))
 
+## [3.0.0](https://github.com/jacaudi/wireguard-operator/compare/v2.11.0...v3.0.0) (2026-10-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** a publicKey that is not a canonical 32-byte base64 WireGuard key is now rejected at admission, and a peerCIDR with host bits set, an IPv6 prefix or a prefix longer than /30 now reports Degraded/InvalidPeerCIDR instead of being used.
+* **api:** WireguardPeer spec.address is removed. Existing peers are allocated afresh into status.address, so a peer's address can change once on upgrade.
+* **controller:** WireguardPeers are no longer given an ownerReference to their Wireguard, so deleting a Wireguard no longer deletes its peers. The pending 'Waiting for wireguard peer to be created', the 'Waiting for <wireguard> to be ready' and the 'Duplicate address' peer statuses are gone. A peer whose Wireguard does not exist now reads pending instead of error.
+* spec.useWgUserspaceImplementation, spec.enableIpForwardOnPodInit and the agent flag --wg-use-userspace-implementation are removed; the server pod always runs a privileged sysctl init container.
+* spec.serviceType, spec.port, spec.address, spec.externalAddress, spec.serviceAnnotations, status.address, status.port, status.uniqueIdentifier and status.resources are removed; `<name>-svc` is always ClusterIP.
+* spec.mtu, spec.dns, spec.dnsSearchDomain, spec.persistentKeepalive, status.dns and WireguardPeer spec.privateKeyRef, allowedIPs, dns and dnsSearchDomain are removed; the `<name>-peer-configs` and `<peer>-peer` Secrets are no longer written; peers must supply spec.publicKey.
+* spec.peerCIDRv6, spec.ipv6Only and WireguardPeer spec.addressV6, disabled, egressNetworkPolicies, downloadSpeed and uploadSpeed are removed.
+* spec.tunnel, status.tunnel and the wstunnel sidecar and Service port are removed.
+* spec.metric, the `<name>-metrics-svc` Service and the agent's :9586 metrics port are removed.
+* **agent:** the server no longer NATs peer traffic or enforces per-peer egress policy, so peers have no internet egress until M4 routes it through gluetun.
+
+### Features
+
+* add PersistentKeepalive to generated peer configs ([f3de393](https://github.com/jacaudi/wireguard-operator/commit/f3de393c6ab845025cb2b2e819dc97d69e306a06)), closes [#4](https://github.com/jacaudi/wireguard-operator/issues/4)
+* **api:** move the allocated peer address to status.address ([9438f14](https://github.com/jacaudi/wireguard-operator/commit/9438f14b22b6f13909808f1f1470e7022501387d))
+* **api:** publish the server endpoint and public key in Wireguard status ([bca286e](https://github.com/jacaudi/wireguard-operator/commit/bca286e9e27ab589528f790b1ed6b9241c7820aa))
+* **api:** validate peer public keys and the peer CIDR ([6a03304](https://github.com/jacaudi/wireguard-operator/commit/6a033041b632bdd2b02be8a76fbb8c3d85f42135))
+* **controller:** reconcile peers from the Wireguard controller alone ([b9dbfd6](https://github.com/jacaudi/wireguard-operator/commit/b9dbfd64da35b766f34e328888c531b1e661c7fa))
+
+
+### Bug Fixes
+
+* **agent:** close the wgctrl client and stop a malformed peer address from panicking ([f2d73a9](https://github.com/jacaudi/wireguard-operator/commit/f2d73a9e2868c410f76acf2cc16d14bad77506a3)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* clear Degraded on success; cover removal, drift, adoption, failure ([5fd49b4](https://github.com/jacaudi/wireguard-operator/commit/5fd49b4c4ad8bef1108c8e50504dc3bead66a686)), closes [#2](https://github.com/jacaudi/wireguard-operator/issues/2)
+* **controller:** hand a new peer to the server in the reconcile that allocates it ([f7f2c41](https://github.com/jacaudi/wireguard-operator/commit/f7f2c41076abd395459b78652565ec485247ce4a))
+* **controller:** keep allocating peers after one peer's status conflict ([2b9243d](https://github.com/jacaudi/wireguard-operator/commit/2b9243d718a29b464dfd2029c5fa9185593c02d4)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* **controller:** keep two peers from sharing an address ([900bbe6](https://github.com/jacaudi/wireguard-operator/commit/900bbe6b818be2923318cda161084c1f14b2be02))
+* **controller:** nudge only server pods in the Wireguard's namespace ([1e95d8b](https://github.com/jacaudi/wireguard-operator/commit/1e95d8b0b116b593298424c5e4c1190c395c8911))
+* **controller:** skip a peer whose status write fails validation at every write site ([43b8fb6](https://github.com/jacaudi/wireguard-operator/commit/43b8fb66d11f2800e0c0de1589a35919ff30077b))
+* **deps:** bump x/net, grpc, otel and the Go toolchain to clear reachable vulnerabilities ([9dbe485](https://github.com/jacaudi/wireguard-operator/commit/9dbe4859b2844f985bb1f12092ffbd5cfab85452)), closes [#2](https://github.com/jacaudi/wireguard-operator/issues/2)
+* give the linter the history its ratchet needs, and say so ([b89f552](https://github.com/jacaudi/wireguard-operator/commit/b89f5526614fed6862bbcb04a92d3c37175e7040)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* keep the envtest suite running in the Makefile test targets ([7a638d7](https://github.com/jacaudi/wireguard-operator/commit/7a638d7e87aa9c2f622fc768bdacf8d5baa3da0e)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* make the hand-written YAML and Dockerfiles pass the new gates ([3b4b9ed](https://github.com/jacaudi/wireguard-operator/commit/3b4b9ed96d0827e399fb4a62c82254db5f0f8eeb)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* reconcile both Services declaratively via Server-Side Apply ([3589a0c](https://github.com/jacaudi/wireguard-operator/commit/3589a0c0b6ddcb36eb14f8fde6f346388c57b5bf)), closes [#2](https://github.com/jacaudi/wireguard-operator/issues/2)
+* reconcile the Deployment declaratively via Server-Side Apply ([21af595](https://github.com/jacaudi/wireguard-operator/commit/21af59527d26521f45b10be5d0a31fd6fd41b73a)), closes [#2](https://github.com/jacaudi/wireguard-operator/issues/2)
+* resolve every gosec finding the new lint baseline reports ([99d1cf4](https://github.com/jacaudi/wireguard-operator/commit/99d1cf4ea75a42b016aa48d7e515a36f73af2d0e)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* stop the Makefile reinstalling tools and eating uncommitted config ([25ba292](https://github.com/jacaudi/wireguard-operator/commit/25ba292844d54f1db085ee4dddd00f220c51a724))
+
+
+### Dependencies
+
+* bump the transitive dependencies carrying reachable vulnerabilities ([31f33e0](https://github.com/jacaudi/wireguard-operator/commit/31f33e0045851cdd5175e4417807e53d623feec5)), closes [#40](https://github.com/jacaudi/wireguard-operator/issues/40) [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+
+
+### Miscellaneous Chores
+
+* ignore the session handoff prompts directory ([a0414d7](https://github.com/jacaudi/wireguard-operator/commit/a0414d77700e3f0c265e04f613f4485f1e4623b8))
+* remove dead scaffolding and stale comments ([66bd490](https://github.com/jacaudi/wireguard-operator/commit/66bd490eb2759334baea4d302b833a9a8283e8de)), closes [#37](https://github.com/jacaudi/wireguard-operator/issues/37)
+* rename Go module path to github.com/jacaudi/wireguard-operator ([e380e0e](https://github.com/jacaudi/wireguard-operator/commit/e380e0ef6656535193f238ef095ac120a3060ba5)), closes [#36](https://github.com/jacaudi/wireguard-operator/issues/36)
+* rename Go module path to jacaudi and complete fork housekeeping ([be6d4e4](https://github.com/jacaudi/wireguard-operator/commit/be6d4e439816a51b31ebaccc3dcc979e142de23e))
+
+
+### Code Refactoring
+
+* **agent:** delete the iptables sync that flushes the pod's rules ([172d3a4](https://github.com/jacaudi/wireguard-operator/commit/172d3a4fc01e24e8f5b0c75e6f5f1dceb92a92bc))
+* delete IPv6 and the per-peer policy fields ([14c52c5](https://github.com/jacaudi/wireguard-operator/commit/14c52c5d9ca4d917c1de52e1a2215810660d6c61))
+* delete peer config rendering and peer key minting ([0789c2e](https://github.com/jacaudi/wireguard-operator/commit/0789c2e98e4454497b2861018d018371d08f2124))
+* delete the agent metrics exporter ([f25455f](https://github.com/jacaudi/wireguard-operator/commit/f25455f31e08222784816b246e9ce964ad5eda6e))
+* delete the one-value knobs and the vestigial ConfigMap ([464884b](https://github.com/jacaudi/wireguard-operator/commit/464884b96896fbe697b724e7fa372a5af452561e))
+* delete the wstunnel sidecar ([d46d94d](https://github.com/jacaudi/wireguard-operator/commit/d46d94dea0c6192b3d85ab565afda2ac095fba1d))
+* make the server Service always ClusterIP ([79f6b37](https://github.com/jacaudi/wireguard-operator/commit/79f6b371b603e11612897968fed295e84baef1d7))
+
 ## [2.6.2](https://github.com/jodevsa/wireguard-operator/compare/v2.6.1...v2.6.2) (2024-07-18)
 
 
