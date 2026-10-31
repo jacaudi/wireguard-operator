@@ -47,10 +47,7 @@ spec:
             description: The desired state of the peer.
             properties:
               address:
-                description: |-
-                  INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-                  Important: Run "make" to regenerate code after modifying this file
-                  The address of the peer.
+                description: The address of the peer.
                 type: string
               publicKey:
                 description: The key used by the peer to authenticate with the wg
@@ -137,10 +134,9 @@ spec:
                   or other information that helps to diagnose issues with the peer.
                 type: string
               status:
-                description: |-
-                  INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-                  Important: Run "make" to regenerate code after modifying this file
-                  A string field that represents the current status of the Wireguard peer. This could include values like ready, pending, or error.
+                description: A string field that represents the current status of
+                  the Wireguard peer. This could include values like ready, pending,
+                  or error.
                 type: string
             type: object
         type: object

@@ -113,7 +113,6 @@ func OnStateChange(path string, logger logr.Logger, onFileChange func(State)) (f
 
 	err = watcher.Add(dir)
 	if err != nil {
-		println(".....")
 		return close, err
 	}
 	return close, nil

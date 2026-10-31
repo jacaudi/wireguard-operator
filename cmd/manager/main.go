@@ -65,7 +65,7 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.StringVar(&agentImagePullPolicy, "agent-image-pull-policy", "IfNotPresent", "Use userspace implementation")
+	flag.StringVar(&agentImagePullPolicy, "agent-image-pull-policy", "IfNotPresent", "The image pull policy for the agent container")
 	flag.StringVar(&leaderElectionNamespaceFlag, "leader-election-namespace", "", "Namespace to place the leader election Lease. Defaults to the operator Pod's namespace when empty.")
 	opts := zap.Options{
 		Development: true,
@@ -106,7 +106,7 @@ func main() {
 	}
 
 	if wgImage == "" {
-		setupLog.Error(fmt.Errorf("--wireguard-container-image flag is not set"), "unable to start manager")
+		setupLog.Error(fmt.Errorf("--agent-image flag is not set"), "unable to start manager")
 		os.Exit(1)
 	}
 

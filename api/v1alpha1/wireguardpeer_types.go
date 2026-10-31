@@ -20,16 +20,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type Status struct {
-}
-
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // WireguardPeerSpec defines the desired state of WireguardPeer
 type WireguardPeerSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
 	// The address of the peer.
 	Address string `json:"address,omitempty"`
 	// The key used by the peer to authenticate with the wg server.
@@ -42,8 +34,6 @@ type WireguardPeerSpec struct {
 
 // WireguardPeerStatus defines the observed state of WireguardPeer
 type WireguardPeerStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
 	// A string field that represents the current status of the Wireguard peer. This could include values like ready, pending, or error.
 	Status string `json:"status,omitempty"`
 	// A string field that provides additional information about the status of the Wireguard peer. This could include error messages or other information that helps to diagnose issues with the peer.
