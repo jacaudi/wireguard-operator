@@ -1,23 +1,62 @@
 # Contributing
 
-This project is built with [Kubebuilder](https://github.com/kubernetes-sigs/kubebuilder);
-read about that first. Fork the repository, make your changes, and open a PR.
+Thanks for your interest in wireguard-operator. This document covers the conventions that the
+release tooling and CI depend on, and the engineering practices every change follows.
 
-Planned work is scoped in [`docs/ROADMAP.md`](docs/ROADMAP.md), with each item tracked as
-a GitHub issue.
+## Before you start
 
-## Getting started
+- Open an issue describing the change before writing code, unless it is a small fix. The design
+  specs and implementation plans are working documents kept outside this repository, so the issue
+  thread is where design intent gets shared — ask there if the reasoning behind an area is not
+  obvious from the code. Open work is tracked under
+  [#37](https://github.com/jacaudi/wireguard-operator/issues/37).
+- The project is built with [Kubebuilder](https://github.com/kubernetes-sigs/kubebuilder); read
+  about that first if it is new to you.
 
-```console
-make test        # runs manifests, generate, fmt, vet, then the envtest suite
+## Local development
+
+```sh
+task --list      # see available tasks
+task ci          # everything the lint stage of CI runs; run it before pushing
+make test        # manifests, generate, fmt, vet, then the envtest suite
 make manifests   # regenerate CRDs and RBAC after changing api/
 make generate    # regenerate deepcopy functions after changing api/
 ```
 
-`make test` regenerates before running, so a stale CRD or an unformatted file fails
-locally rather than in CI. Never hand-edit `zz_generated.deepcopy.go` or anything under
-`config/crd/bases` — regenerate instead. `release.yaml` is produced at release time and
-should not be edited by hand either.
+`make test` regenerates before running, so a stale CRD or an unformatted file fails locally rather
+than in CI. It passes `-tags=integration`; without that tag `go test ./...` skips the envtest suite
+and still reports success.
+
+## Generated artifacts
+
+Never hand-edit `zz_generated.deepcopy.go` or anything under `config/crd/bases` — regenerate
+instead. `release.yaml` is produced by `make generate-release-file`, and CI fails the build when it
+drifts from `config/`.
+
+## Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/). Examples:
+
+- `feat: add spec.localCIDRs to Wireguard`
+- `fix(controller): keep allocating peers after one peer's status conflict`
+- `refactor!: delete the wstunnel sidecar`
+- `docs: describe the peer status messages`
+
+[release-please](https://github.com/googleapis/release-please) reads the commit types on `main`
+and maintains a release PR; merging that PR tags the release. `feat:` drives a minor release and
+`fix:` a patch. A `!` or a `BREAKING CHANGE:` footer drives a **major** release, because the
+version is past `1.0.0` (see
+[`.github/release-please-manifest.json`](.github/release-please-manifest.json)). A commit without a conventional type contributes nothing to the changelog
+or the version.
+
+## Pull requests
+
+1. Branch from `main`: `git switch -c feat/<topic>`.
+2. Keep PRs focused; one logical change per PR.
+3. Run `task ci` and `make test` locally.
+4. Get a cold review (see below), then open the PR against `main`.
+5. The required check is `ci`; it must be green. PRs are merged, not squashed, so every commit
+   subject must be a Conventional Commit.
 
 ## Engineering practices
 
@@ -25,60 +64,58 @@ These apply to every change.
 
 ### TDD
 
-Write the test first, watch it fail for the right reason, then make it pass. A test that
-has never failed has proven nothing.
+Write the test first, watch it fail for the right reason, then make it pass. A test that has never
+failed has proven nothing.
 
-For changes that add behaviour this is literal. For **pure refactors** it is not — there
-is no new behaviour to drive out, so writing new tests first would be cargo-culting.
-On a refactor it means: establish a green baseline before touching anything, keep it green
-after every step, and if an existing test fails, the refactor changed behaviour. Fix the
-code, never the assertion.
+For changes that add behaviour this is literal. For **pure refactors** it is not — there is no new
+behaviour to drive out, so writing new tests first would be cargo-culting. On a refactor it means:
+establish a green baseline before touching anything, keep it green after every step, and if an
+existing test fails, the refactor changed behaviour. Fix the code, never the assertion.
 
 ### DRY
 
-The hardest-won lesson in this codebase: `internal/resources` and the inline reconciler
-functions were the same code twice, and they silently drifted apart. Do not create a second
-copy of anything — a constant, a rendering path, a default value. One source of truth,
-referenced.
+The hardest-won lesson in this codebase: `internal/resources` and the inline reconciler functions
+were the same code twice, and they silently drifted apart. Do not create a second copy of anything
+— a constant, a rendering path, a default value. One source of truth, referenced.
 
-Note the limit: two things that look alike but change for different reasons are not
-duplication. Do not collapse them to satisfy the acronym.
+Note the limit: two things that look alike but change for different reasons are not duplication.
+Do not collapse them to satisfy the acronym.
 
 ### 12-Factor
 
 Most factors are satisfied by Kubernetes itself. The ones that bite here:
 
-- **Config** — configuration comes from the CRD or the environment, never hardcoded in more
-  than one place. A default belongs in the CRD's `+kubebuilder:default`, with any Go
-  constant existing only as a nil-fallback.
-- **Processes** — builders stay pure functions of their inputs. No caching on the
-  reconciler, no hidden state between calls.
+- **Config** — configuration comes from the CRD or the environment, never hardcoded in more than
+  one place. A default belongs in the CRD's `+kubebuilder:default`, with any Go constant existing
+  only as a nil-fallback.
+- **Processes** — builders stay pure functions of their inputs. No caching on the reconciler, no
+  hidden state between calls.
 - **Logs** — event streams to stdout via `logr`. No log files, no rotation.
 - **Disposability** — fast startup, graceful shutdown.
 
 ### YAGNI
 
-Build what the issue asks for. Do not add a config knob because someone might want it, and
-do not generalise for a second implementation that does not exist. If you are writing an
-abstraction with exactly one caller, stop.
+Build what the issue asks for. Do not add a config knob because someone might want it, and do not
+generalise for a second implementation that does not exist. If you are writing an abstraction with
+exactly one caller, stop.
 
 ### KISS
 
-Prefer the boring solution. If a reviewer needs the design doc open to understand the diff,
-it is too clever. Explicit repetition of three short lines beats a helper that takes four
-parameters to avoid it.
+Prefer the boring solution. If a reviewer needs the design doc open to understand the diff, it is
+too clever. Explicit repetition of three short lines beats a helper that takes four parameters to
+avoid it.
 
 ### Cold review before the PR
 
-Before opening a PR, get a review from a reviewer with none of the context that produced
-the change — a fresh session, colleague, or agent — given only:
+Before opening a PR, get a review from a reviewer with none of the context that produced the change
+— a fresh session, colleague, or agent — given only:
 
 - the diff
 - the issue text, including its acceptance criteria
 - the repository
 
-and explicitly **not** the implementation plan, the discussion that produced it, or any
-reasoning about why choices were made.
+and explicitly **not** the implementation plan, the discussion that produced it, or any reasoning
+about why choices were made.
 
 Ask it to answer:
 
@@ -87,6 +124,10 @@ Ask it to answer:
 3. Is anything wrong, unclear, or surprising to someone seeing it for the first time?
 4. Are the tests testing behaviour, or asserting on implementation details?
 
-An author who has been reasoning about a change for an hour cannot see what is unexplained
-in it. If the cold reviewer misreads the diff, that is a finding about the diff. Address
-the findings, then open the PR.
+An author who has been reasoning about a change for an hour cannot see what is unexplained in it.
+If the cold reviewer misreads the diff, that is a finding about the diff. Address the findings,
+then open the PR.
+
+## Reporting security issues
+
+See [SECURITY.md](SECURITY.md). Do not file public issues for vulnerabilities.

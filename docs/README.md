@@ -1,0 +1,41 @@
+# wireguard-operator documentation
+
+A Kubernetes operator that runs a WireGuard server inside your cluster and admits pods to it by
+public key, declaratively — the base of an in-cluster VPN gateway that egresses through gluetun.
+
+New here? Start with the [Quick start in the root README](../README.md#quick-start), then dig in:
+
+| Doc | What it covers |
+|---|---|
+| [Installation](installation.md) | Prerequisites, install from source, your own images, manager flags, uninstall |
+| [Architecture](architecture.md) | The two-resource model, the server pod, identity and addresses, what is out of scope |
+| [`Wireguard` reference](crd-wireguard.md) | Server CRD: spec, status, conditions, owned objects, lifecycle |
+| [`WireguardPeer` reference](crd-wireguardpeer.md) | Peer CRD: spec, status, conditions, lifecycle |
+| [Gluetun egress](gluetun-egress.md) | Server egress through a gluetun sidecar — **designed, not yet implemented** |
+| [Client sidecar](client-sidecar.md) | In-pod WireGuard client — **designed, not yet implemented** |
+| [Upgrading from upstream](upgrading-from-upstream.md) | What this fork removed from jodevsa/wireguard-operator and what to do instead |
+| [Examples](../examples/) | Runnable sample manifests |
+
+## What's implemented
+
+- **`Wireguard`** reconcile — server key Secret, single-replica server Deployment, ClusterIP
+  Service on UDP `51820`, all applied with Server-Side Apply and garbage-collected with the CR.
+- **`WireguardPeer`** registration — address allocation from `peerCIDR`, `PublicKeyMissing`
+  reporting, duplicate-address reporting, ownership by the `Wireguard`.
+- **Agent** — kernel WireGuard with a wireguard-go fallback; adds, updates and removes peers by
+  public key as `state.json` changes; `/health` readiness.
+
+## Not yet implemented (designed)
+
+- **Egress through gluetun** — see [gluetun-egress.md](gluetun-egress.md). Tracked in
+  [#3](https://github.com/jacaudi/wireguard-operator/issues/3).
+- **Client sidecar** — see [client-sidecar.md](client-sidecar.md). Tracked in
+  [#32](https://github.com/jacaudi/wireguard-operator/issues/32).
+- **Peer validation** — a malformed `publicKey` is accepted by the API today (see
+  [crd-wireguardpeer.md](crd-wireguardpeer.md#lifecycle-notes)). Tracked in
+  [#37](https://github.com/jacaudi/wireguard-operator/issues/37).
+- **OCI Helm chart** — see [installation.md](installation.md#install-with-helm-oci). Tracked in
+  [#48](https://github.com/jacaudi/wireguard-operator/issues/48).
+
+The design specs and implementation plans are working documents kept outside this repository, so
+the issue threads are where design intent gets shared.
