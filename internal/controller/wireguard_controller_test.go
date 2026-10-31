@@ -97,7 +97,7 @@ var _ = Describe("wireguard controller", func() {
 				if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
 					return ""
 				}
-				return got.Spec.Address
+				return got.Status.Address
 			}, Timeout, Interval).Should(Equal("10.8.0.2"))
 
 			// A peer without a publicKey is never minted a key, never allocated an address and
@@ -124,7 +124,7 @@ var _ = Describe("wireguard controller", func() {
 				if err := k8sClient.Get(context.Background(), keylessKey, got); err != nil {
 					return "get-failed"
 				}
-				return got.Spec.Address + "|" + got.Status.Status
+				return got.Status.Address + "|" + got.Status.Status
 			}, "2s", Interval).Should(Equal("|"+v1alpha1.Pending), "a keyless peer gets no address and is never Ready")
 
 			// The server Secret's state.json carries the keyed peer: that is all the agent needs.
@@ -169,7 +169,7 @@ var _ = Describe("wireguard controller", func() {
 				if c := meta.FindStatusCondition(got.Status.Conditions, ConditionReady); c != nil {
 					return "condition Ready=" + string(c.Status) + "/" + c.Reason
 				}
-				if got.Spec.Address == "" {
+				if got.Status.Address == "" {
 					return "no-address"
 				}
 				return got.Status.Status
@@ -276,7 +276,7 @@ var _ = Describe("wireguard controller", func() {
 			Eventually(func() string {
 				Expect(k8sClient.Get(context.Background(), peerKey, peer)).Should(Succeed())
 				print(peer.Status.Message)
-				return peer.Spec.Address
+				return peer.Status.Address
 			}, Timeout, Interval).Should(Equal("10.8.0.2"))
 
 			Eventually(func() v1alpha1.WireguardPeerStatus {
@@ -288,6 +288,7 @@ var _ = Describe("wireguard controller", func() {
 			}, Timeout, Interval).Should(Equal(v1alpha1.WireguardPeerStatus{
 				Status:  "ready",
 				Message: "Peer configured",
+				Address: "10.8.0.2",
 			}))
 
 			Eventually(func() error {
@@ -358,7 +359,7 @@ var _ = Describe("wireguard controller", func() {
 			// first usable IP in 10.9.0.0/24 after network (.0) and gateway (.1) is .2
 			Eventually(func() string {
 				Expect(k8sClient.Get(context.Background(), peerKey, peer)).Should(Succeed())
-				return peer.Spec.Address
+				return peer.Status.Address
 			}, Timeout, Interval).Should(Equal("10.9.0.2"))
 		})
 
@@ -509,7 +510,7 @@ var _ = Describe("wireguard controller", func() {
 				if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
 					return ""
 				}
-				return got.Spec.Address
+				return got.Status.Address
 			}, Timeout, Interval).Should(Equal("10.8.0.2"))
 			Eventually(serverState(wgKey), Timeout, Interval).Should(ContainSubstring(publicKey))
 
@@ -556,7 +557,7 @@ var _ = Describe("wireguard controller", func() {
 				if c := meta.FindStatusCondition(got.Status.Conditions, ConditionReady); c != nil {
 					return "condition Ready=" + string(c.Status) + "/" + c.Reason
 				}
-				return got.Status.Status + "|" + got.Spec.Address
+				return got.Status.Status + "|" + got.Status.Address
 			}, Timeout, Interval).Should(Equal(v1alpha1.Ready+"|10.8.0.2"), "once the server exists the peer is admitted and the condition cleared")
 
 			Expect(k8sClient.Delete(context.Background(), wg)).Should(Succeed())
@@ -564,6 +565,63 @@ var _ = Describe("wireguard controller", func() {
 				return apierrors.IsNotFound(k8sClient.Get(context.Background(), wgKey, &v1alpha1.Wireguard{}))
 			}, Timeout, Interval).Should(BeTrue())
 			Eventually(notFound, Timeout, Interval).Should(Equal(want), "deleting the Wireguard must report its peers WireguardNotFound again")
+
+			// The same write that reports WireguardNotFound releases the peer's address.
+			gone := &v1alpha1.WireguardPeer{}
+			Expect(k8sClient.Get(context.Background(), peerKey, gone)).Should(Succeed())
+			Expect(gone.Status.Address).Should(BeEmpty(), "a peer whose Wireguard is gone holds no address")
+		})
+
+		It("releases a peer's address when its publicKey is removed", func() {
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			})).Should(Succeed())
+
+			// address returns the peer's status.address, or says why it could not read it.
+			address := func(key types.NamespacedName) func() string {
+				return func() string {
+					got := &v1alpha1.WireguardPeer{}
+					if err := k8sClient.Get(context.Background(), key, got); err != nil {
+						return "get-failed"
+					}
+					return got.Status.Address
+				}
+			}
+
+			releasedKey := types.NamespacedName{Name: wgName + "-released-peer", Namespace: wgNamespace}
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: releasedKey.Name, Namespace: releasedKey.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
+			})).Should(Succeed())
+			Eventually(address(releasedKey), Timeout, Interval).Should(Equal("10.8.0.2"))
+
+			Eventually(func() error {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), releasedKey, got); err != nil {
+					return err
+				}
+				got.Spec.PublicKey = ""
+				return k8sClient.Update(context.Background(), got)
+			}, Timeout, Interval).Should(Succeed())
+			Eventually(func() string {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), releasedKey, got); err != nil {
+					return "get-failed"
+				}
+				c := meta.FindStatusCondition(got.Status.Conditions, ConditionReady)
+				if c == nil || c.Status != metav1.ConditionFalse {
+					return "no-ready-false-condition"
+				}
+				return c.Reason + "|" + got.Status.Address
+			}, Timeout, Interval).Should(Equal("PublicKeyMissing|"), "a peer that loses its publicKey is released")
+
+			// The released address is reusable: a new peer takes it.
+			reuseKey := types.NamespacedName{Name: wgName + "-reuse-peer", Namespace: wgNamespace}
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: reuseKey.Name, Namespace: reuseKey.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
+			})).Should(Succeed())
+			Eventually(address(reuseKey), Timeout, Interval).Should(Equal("10.8.0.2"))
 		})
 
 		It("moves a peer to the server its wireguardRef names", func() {

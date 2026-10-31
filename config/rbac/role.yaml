@@ -50,7 +50,6 @@ rules:
   verbs:
   - get
   - list
-  - update
   - watch
 - apiGroups:
   - vpn.wireguard-operator.io

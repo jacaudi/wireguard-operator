@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -100,14 +101,16 @@ func TestIsStateValidNeedsNoServerAddressOrDNS(t *testing.T) {
 	}
 }
 
-func TestIsStateValidAcceptsAStateWrittenBeforeTheTrim(t *testing.T) {
+func TestIsStateValidIgnoresFieldsTheAgentDoesNotRead(t *testing.T) {
 	// During a rollout the new agent can read a state.json written by an operator that still
-	// rendered the deleted fields. Unknown fields must be ignored, not rejected.
+	// rendered fields the agent no longer reads. Unknown fields in state.json are ignored, not
+	// rejected.
 	const legacy = `{"Server":{"spec":{"mtu":"1380","serviceType":"LoadBalancer","dns":"1.1.1.1"},` +
 		`"status":{"address":"203.0.113.10","dns":"10.0.0.10","port":"51820"}},` +
 		`"ServerPrivateKey":"PLA+byaz6a5jbnioieB4NEELG7sdq7Wk+3u9Kw0s6zk=",` +
-		`"Peers":[{"spec":{"address":"10.8.0.2","publicKey":"v5Q+oRNBfxafhiAR9bXGEhRsRFfEFb7XsFV8DWGrykQ=",` +
-		`"wireguardRef":"vpn","privateKeyRef":{"secretKeyRef":{"name":"p","key":"privateKey"}}}}]}`
+		`"Peers":[{"spec":{"publicKey":"v5Q+oRNBfxafhiAR9bXGEhRsRFfEFb7XsFV8DWGrykQ=",` +
+		`"wireguardRef":"vpn","privateKeyRef":{"secretKeyRef":{"name":"p","key":"privateKey"}}},` +
+		`"status":{"address":"10.8.0.2"}}]}`
 
 	state, _, err := GetDesiredState(writeState(t, legacy))
 	if err != nil {
@@ -116,8 +119,25 @@ func TestIsStateValidAcceptsAStateWrittenBeforeTheTrim(t *testing.T) {
 	if err := IsStateValid(state); err != nil {
 		t.Errorf("IsStateValid(pre-trim state) = %v, want nil", err)
 	}
-	if len(state.Peers) != 1 || state.Peers[0].Spec.Address != "10.8.0.2" {
+	if len(state.Peers) != 1 || state.Peers[0].Status.Address != "10.8.0.2" {
 		t.Errorf("peers = %+v, want the single pre-trim peer at 10.8.0.2", state.Peers)
+	}
+}
+
+func TestIsStateValidRejectsAStateWithOnlySpecAddresses(t *testing.T) {
+	// A state.json written by the M1 operator carries each peer's address in spec.address, which
+	// this agent no longer reads. It must be rejected, not applied with an unaddressed peer.
+	const m1 = `{"ServerPrivateKey":"PLA+byaz6a5jbnioieB4NEELG7sdq7Wk+3u9Kw0s6zk=",` +
+		`"Peers":[{"spec":{"address":"10.8.0.2","publicKey":"v5Q+oRNBfxafhiAR9bXGEhRsRFfEFb7XsFV8DWGrykQ=",` +
+		`"wireguardRef":"vpn"}}]}`
+
+	state, _, err := GetDesiredState(writeState(t, m1))
+	if err != nil {
+		t.Fatalf("GetDesiredState(M1 state): %v", err)
+	}
+	err = IsStateValid(state)
+	if err == nil || !strings.Contains(err.Error(), "does not have the address defined") {
+		t.Errorf("IsStateValid(M1 state) = %v, want an error containing %q", err, "does not have the address defined")
 	}
 }
 

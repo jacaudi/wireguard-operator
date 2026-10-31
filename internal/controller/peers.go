@@ -60,11 +60,12 @@ func wireguardForPeer(_ context.Context, obj client.Object) []reconcile.Request 
 }
 
 // peerStatusMatches reports whether peer already records nr: status.status, status.message,
-// and a Ready condition with Status False, nr.Reason, nr.ConditionMessage and
-// ObservedGeneration == peer.Generation.
+// no status.address (a peer the server cannot admit holds none), and a Ready condition with Status
+// False, nr.Reason, nr.ConditionMessage and ObservedGeneration == peer.Generation.
 func peerStatusMatches(peer *v1alpha1.WireguardPeer, nr notReady) bool {
 	c := meta.FindStatusCondition(peer.Status.Conditions, ConditionReady)
 	return peer.Status.Status == nr.Status &&
+		peer.Status.Address == "" &&
 		peer.Status.Message == nr.Message &&
 		c != nil &&
 		c.Status == metav1.ConditionFalse &&
