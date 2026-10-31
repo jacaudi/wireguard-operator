@@ -1,6 +1,7 @@
 package wireguard
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -65,7 +66,7 @@ func syncAddress(iface string, ipWithMask *net.IPNet, family int) error {
 
 	addresses, err := netlink.AddrList(link, family)
 	if err != nil {
-		return nil
+		return fmt.Errorf("netlink addr list: %w", err)
 	}
 
 	if len(addresses) != 0 {
@@ -152,7 +153,7 @@ func waitForLink(iface string, timeout time.Duration) error {
 	}
 }
 
-func createLinkUsingKernalModule(iface string) error {
+func createLinkUsingKernelModule(iface string) error {
 	// link not created
 	wgLink := &netlink.GenericLink{
 		LinkAttrs: netlink.LinkAttrs{
@@ -172,44 +173,48 @@ func createLinkUsingKernalModule(iface string) error {
 // and falling back to the userspace implementation when the module is unavailable.
 func SyncLink(_ agent.State, iface string, wgUserspaceImplementationFallback string) error {
 	_, err := netlink.LinkByName(iface)
-	if err != nil {
-		if _, ok := err.(netlink.LinkNotFoundError); !ok {
+	if err == nil {
+		return nil
+	}
+	if _, ok := errors.AsType[netlink.LinkNotFoundError](err); !ok {
+		return err
+	}
+
+	if kernelErr := createLinkUsingKernelModule(iface); kernelErr != nil {
+		// Keep both causes: a node with neither the module nor a usable
+		// userspace implementation should report why each failed.
+		if userspaceErr := createLinkUsingUserspaceImpl(iface, wgUserspaceImplementationFallback); userspaceErr != nil {
+			return errors.Join(kernelErr, userspaceErr)
+		}
+
+		// The userspace implementation creates the link asynchronously.
+		if err := waitForLink(iface, userspaceLinkTimeout); err != nil {
 			return err
 		}
 	}
 
-	if _, ok := err.(netlink.LinkNotFoundError); ok {
-		err = createLinkUsingKernalModule(iface)
-
-		if err != nil {
-			err = createLinkUsingUserspaceImpl(iface, wgUserspaceImplementationFallback)
-
-			if err != nil {
-				return err
-			}
-
-			// The userspace implementation creates the link asynchronously.
-			if err := waitForLink(iface, userspaceLinkTimeout); err != nil {
-				return err
-			}
-		}
-
-		// Verify link exists after creation
-		link, err := netlink.LinkByName(iface)
-		if err != nil {
-			return fmt.Errorf("expected link %q after creation, but not found: %w", iface, err)
-		}
-		if err := netlink.LinkSetUp(link); err != nil {
-			return fmt.Errorf("bringing link %q up failed: %w", iface, err)
-		}
+	// Verify link exists after creation
+	link, err := netlink.LinkByName(iface)
+	if err != nil {
+		return fmt.Errorf("expected link %q after creation, but not found: %w", iface, err)
+	}
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("bringing link %q up failed: %w", iface, err)
 	}
 
 	return nil
 }
 
-func (wg *Wireguard) syncWireguard(state agent.State, iface string, listenPort int) error {
-	c, _ := wgctrl.New()
-	cfg, err := CreateWireguardConfiguration(state, iface, listenPort)
+func (wg *Wireguard) syncWireguard(state agent.State, iface string, listenPort int) (err error) {
+	// One client per sync: each wgctrl.New opens a genetlink socket, and
+	// /health calls Sync every few seconds.
+	c, err := wgctrl.New()
+	if err != nil {
+		return fmt.Errorf("open wgctrl client: %w", err)
+	}
+	defer func() { err = errors.Join(err, c.Close()) }()
+
+	cfg, err := CreateWireguardConfiguration(c, state, iface, listenPort)
 	if err != nil {
 		return err
 	}
@@ -220,12 +225,17 @@ func (wg *Wireguard) syncWireguard(state agent.State, iface string, listenPort i
 	}
 
 	for _, peer := range cfg.Peers {
+		// A device peer can carry no AllowedIPs.
+		var peerIP string
+		if len(peer.AllowedIPs) > 0 {
+			peerIP = peer.AllowedIPs[0].String()
+		}
 		if peer.Remove {
-			wg.Logger.V(2).Info("Removed peer", "peerIP", peer.AllowedIPs[0].String(), "peerPublicKey", peer.PublicKey.String())
+			wg.Logger.V(2).Info("Removed peer", "peerIP", peerIP, "peerPublicKey", peer.PublicKey.String())
 		} else if peer.UpdateOnly {
-			wg.Logger.V(2).Info("Updated peer", "peerIP", peer.AllowedIPs[0].String(), "peerPublicKey", peer.PublicKey.String())
+			wg.Logger.V(2).Info("Updated peer", "peerIP", peerIP, "peerPublicKey", peer.PublicKey.String())
 		} else {
-			wg.Logger.V(2).Info("Added peer", "peerIP", peer.AllowedIPs[0].String(), "peerPublicKey", peer.PublicKey.String())
+			wg.Logger.V(2).Info("Added peer", "peerIP", peerIP, "peerPublicKey", peer.PublicKey.String())
 		}
 	}
 
@@ -277,10 +287,13 @@ func (wg *Wireguard) Sync(state agent.State) error {
 	return nil
 }
 
-func getIP(ip string) []net.IPNet {
-	_, ipnet, _ := net.ParseCIDR(ip)
+func getIP(ip string) ([]net.IPNet, error) {
+	_, ipnet, err := net.ParseCIDR(ip)
+	if err != nil {
+		return nil, fmt.Errorf("parse allowed IP %q: %w", ip, err)
+	}
 
-	return []net.IPNet{*ipnet}
+	return []net.IPNet{*ipnet}, nil
 }
 
 func gatewayIPFromPrefix(prefix netip.Prefix) (*net.IPNet, net.IP, error) {
@@ -299,16 +312,23 @@ func gatewayIPFromPrefix(prefix netip.Prefix) (*net.IPNet, net.IP, error) {
 	return &net.IPNet{IP: ip, Mask: net.CIDRMask(32, 32)}, ip, nil
 }
 
-func createPeersConfiguration(state agent.State, iface string) ([]wgtypes.PeerConfig, error) {
+// allowedIPsEqual reports whether a and b hold the same networks in the same order.
+func allowedIPsEqual(a, b []net.IPNet) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !a[i].IP.Equal(b[i].IP) || a[i].Mask.String() != b[i].Mask.String() {
+			return false
+		}
+	}
+	return true
+}
+
+func createPeersConfiguration(c *wgctrl.Client, state agent.State, iface string) ([]wgtypes.PeerConfig, error) {
 	var peersState = make(map[string]v1alpha1.WireguardPeer)
 	for _, peer := range state.Peers {
 		peersState[peer.Spec.PublicKey] = peer
-	}
-
-	c, err := wgctrl.New()
-
-	if err != nil {
-		return []wgtypes.PeerConfig{}, err
 	}
 
 	device, err := c.Device(iface)
@@ -335,39 +355,24 @@ func createPeersConfiguration(state agent.State, iface string) ([]wgtypes.PeerCo
 			peerConfigurationByPublicKey[p.PublicKey.String()] = p
 
 		} else {
-			if peerState.Spec.PublicKey == "" {
-				// delete peer
+			var desiredAllowed []net.IPNet
+			if peerState.Spec.Address != "" {
+				allowed, err := getIP(peerState.Spec.Address + "/32")
+				if err != nil {
+					return []wgtypes.PeerConfig{}, fmt.Errorf("peer %q: %w", peerState.Name, err)
+				}
+				desiredAllowed = append(desiredAllowed, allowed...)
+			}
+
+			// Only update if AllowedIPs differ.
+			if !allowedIPsEqual(desiredAllowed, peer.AllowedIPs) {
 				p := wgtypes.PeerConfig{
-					Remove:     true,
-					AllowedIPs: peer.AllowedIPs,
-					PublicKey:  peer.PublicKey,
+					UpdateOnly:        true,
+					AllowedIPs:        desiredAllowed,
+					PublicKey:         peer.PublicKey,
+					ReplaceAllowedIPs: true,
 				}
 				peerConfigurationByPublicKey[p.PublicKey.String()] = p
-			} else {
-				var desiredAllowed []net.IPNet
-				if peerState.Spec.Address != "" {
-					desiredAllowed = append(desiredAllowed, getIP(peerState.Spec.Address+"/32")...)
-				}
-
-				// Only update if AllowedIPs differ.
-				same := len(desiredAllowed) == len(peer.AllowedIPs)
-				if same {
-					for i := range desiredAllowed {
-						if !desiredAllowed[i].IP.Equal(peer.AllowedIPs[i].IP) || desiredAllowed[i].Mask.String() != peer.AllowedIPs[i].Mask.String() {
-							same = false
-							break
-						}
-					}
-				}
-				if !same {
-					p := wgtypes.PeerConfig{
-						UpdateOnly:        true,
-						AllowedIPs:        desiredAllowed,
-						PublicKey:         peer.PublicKey,
-						ReplaceAllowedIPs: true,
-					}
-					peerConfigurationByPublicKey[p.PublicKey.String()] = p
-				}
 			}
 		}
 	}
@@ -392,7 +397,10 @@ func createPeersConfiguration(state agent.State, iface string) ([]wgtypes.PeerCo
 		}
 
 		// create peer
-		allowed := getIP(peer.Spec.Address + "/32")
+		allowed, err := getIP(peer.Spec.Address + "/32")
+		if err != nil {
+			return []wgtypes.PeerConfig{}, fmt.Errorf("peer %q: %w", peer.Name, err)
+		}
 		p := wgtypes.PeerConfig{
 			AllowedIPs: allowed,
 			PublicKey:  key,
@@ -409,7 +417,9 @@ func createPeersConfiguration(state agent.State, iface string) ([]wgtypes.PeerCo
 	return l, nil
 }
 
-func CreateWireguardConfiguration(state agent.State, iface string, listenPort int) (wgtypes.Config, error) {
+// CreateWireguardConfiguration builds the desired device configuration for iface
+// from state, reading the device's current peers through c.
+func CreateWireguardConfiguration(c *wgctrl.Client, state agent.State, iface string, listenPort int) (wgtypes.Config, error) {
 	cfg := wgtypes.Config{}
 
 	key, err := wgtypes.ParseKey(state.ServerPrivateKey)
@@ -422,7 +432,7 @@ func CreateWireguardConfiguration(state agent.State, iface string, listenPort in
 	cfg.ReplacePeers = false
 	cfg.ListenPort = &listenPort
 
-	peers, err := createPeersConfiguration(state, iface)
+	peers, err := createPeersConfiguration(c, state, iface)
 	if err != nil {
 		return wgtypes.Config{}, err
 	}
