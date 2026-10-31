@@ -165,11 +165,9 @@ var _ = Describe("no update churn", func() {
 
 		// Nudge the reconciler by annotating the Wireguard.
 		//
-		// This is NOT a no-op for every owned object: agent.State embeds the whole Wireguard
-		// (wireguard_controller.go, `Server: *wireguard.DeepCopy()`), so the annotation is
-		// serialised into state.json and the server Secret is legitimately rewritten. That is why
-		// the assertions below name the Deployment and Service explicitly rather than counting
-		// everything in the namespace.
+		// The annotation does not reach state.json, which carries only the Wireguard's name, namespace and
+		// spec. The assertions below still name the Deployment and Service explicitly: the Secret is not this
+		// spec's subject.
 		for i := range 3 {
 			Eventually(func() error {
 				live := &v1alpha1.Wireguard{}

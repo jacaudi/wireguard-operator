@@ -1,10 +1,13 @@
 package controllers
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
+	"github.com/jacaudi/wireguard-operator/internal/agent"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/api/meta"
@@ -20,6 +23,8 @@ const (
 	ReasonPublicKeyMissing = "PublicKeyMissing"
 	// ReasonWireguardNotFound: no Wireguard named spec.wireguardRef exists in the peer's namespace.
 	ReasonWireguardNotFound = "WireguardNotFound"
+	// ReasonAddressPoolExhausted: the server's peerCIDR has no free address left.
+	ReasonAddressPoolExhausted = "AddressPoolExhausted"
 )
 
 // notReady is a peer state the server cannot admit: the summary fields and the Ready=False
@@ -46,6 +51,41 @@ func wireguardNotFound(ref, namespace string) notReady {
 		Message:          fmt.Sprintf("Waiting for wireguard resource '%s' to be created", ref),
 		Reason:           ReasonWireguardNotFound,
 		ConditionMessage: fmt.Sprintf("no Wireguard named %s exists in namespace %s", ref, namespace),
+	}
+}
+
+// addressPoolExhausted is the not-ready record for a peer that cidr has no free address for.
+func addressPoolExhausted(cidr string) notReady {
+	return notReady{
+		Status:           v1alpha1.Pending,
+		Message:          fmt.Sprintf("No free address in %s", cidr),
+		Reason:           ReasonAddressPoolExhausted,
+		ConditionMessage: fmt.Sprintf("peerCIDR %s has no free address for this peer", cidr),
+	}
+}
+
+// desiredState renders the agent's state.json content from the server's name, namespace and
+// spec and from each peer's name, namespace, spec.publicKey, spec.wireguardRef and
+// status.address, sorted by peer name. No other status field, no metadata and no resourceVersion reach it, so
+// writing them never changes the rendered state.
+func desiredState(wg *v1alpha1.Wireguard, privateKey string, peers []v1alpha1.WireguardPeer) agent.State {
+	rendered := make([]v1alpha1.WireguardPeer, len(peers))
+	for i, peer := range peers {
+		rendered[i] = v1alpha1.WireguardPeer{
+			ObjectMeta: metav1.ObjectMeta{Name: peer.Name, Namespace: peer.Namespace},
+			Spec:       peer.Spec,
+			Status:     v1alpha1.WireguardPeerStatus{Address: peer.Status.Address},
+		}
+	}
+	slices.SortFunc(rendered, func(a, b v1alpha1.WireguardPeer) int { return cmp.Compare(a.Name, b.Name) })
+
+	return agent.State{
+		Server: v1alpha1.Wireguard{
+			ObjectMeta: metav1.ObjectMeta{Name: wg.Name, Namespace: wg.Namespace},
+			Spec:       *wg.Spec.DeepCopy(),
+		},
+		ServerPrivateKey: privateKey,
+		Peers:            rendered,
 	}
 }
 

@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
-	"github.com/jacaudi/wireguard-operator/internal/agent"
 	"github.com/jacaudi/wireguard-operator/internal/ipam"
 	"github.com/jacaudi/wireguard-operator/internal/resources"
 
@@ -139,59 +138,86 @@ func effectivePeerCIDR4(wg *v1alpha1.Wireguard) string {
 	return ipam.DefaultPeerCIDR4
 }
 
-// updateWireguardPeers allocates a status.address to every peer of this Wireguard that has a
-// publicKey but no address, and marks each such peer Ready. A peer without a publicKey gets no
-// address: it is marked Ready=False with reason PublicKeyMissing.
-func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl.Request, wireguard *v1alpha1.Wireguard) error {
+// reconcilePeers lists the peers of wg, records a not-ready status on those the server cannot
+// admit, allocates and readies the rest, and returns the peers admitted in this pass, as written:
+// keyed and holding a status.address.
+func (r *WireguardReconciler) reconcilePeers(ctx context.Context, req ctrl.Request, wg *v1alpha1.Wireguard) ([]v1alpha1.WireguardPeer, error) {
 	peers, err := r.getWireguardPeers(ctx, req)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	admitted, err := r.admitPeers(ctx, peers.Items)
+	if err != nil {
+		return nil, err
+	}
+	return r.allocatePeers(ctx, effectivePeerCIDR4(wg), admitted)
+}
 
-	cidr4 := effectivePeerCIDR4(wireguard)
-	usedIps4 := r.ipAllocator.GetUsedIPs(cidr4, peers)
-
-	for _, peer := range peers.Items {
-		if peer.Spec.PublicKey == "" {
-			if err := r.markPeerNotReady(ctx, &peer, publicKeyMissing); err != nil {
-				// A skipped peer is this peer's retry, not the loop's: whoever won the write,
-				// or the deletion, also emits a watch event, which re-enqueues the Wireguard.
-				if skipPeerWrite(err) {
-					continue
-				}
-				return err
-			}
+// admitPeers records a not-ready status on every peer the server cannot admit and returns the
+// others, in input order.
+func (r *WireguardReconciler) admitPeers(ctx context.Context, peers []v1alpha1.WireguardPeer) ([]v1alpha1.WireguardPeer, error) {
+	var admitted []v1alpha1.WireguardPeer
+	for _, peer := range peers {
+		if peer.Spec.PublicKey != "" {
+			admitted = append(admitted, peer)
 			continue
 		}
+		// A skipped peer is this peer's retry, not the loop's: whoever won the write, or the
+		// deletion, also emits a watch event, which re-enqueues the Wireguard.
+		if err := r.markPeerNotReady(ctx, &peer, publicKeyMissing); err != nil && !skipPeerWrite(err) {
+			return nil, err
+		}
+	}
+	return admitted, nil
+}
 
-		allocated := peer.Status.Address == ""
-		if allocated {
-			ip, err := r.ipAllocator.AllocateIP(cidr4, usedIps4)
-			if err != nil {
-				return err
+// allocatePeers gives each peer without a status.address the first free address in cidr4 and
+// marks each peer ready in the same status write. It returns every peer that holds a persisted
+// address at the end of the pass, as written: those that needed no write, those whose write
+// succeeded, and those that already held an address but whose readiness write was skipped. A
+// peer AllocateIP cannot serve gets addressPoolExhausted(cidr4) instead, and the loop continues.
+func (r *WireguardReconciler) allocatePeers(ctx context.Context, cidr4 string, peers []v1alpha1.WireguardPeer) ([]v1alpha1.WireguardPeer, error) {
+	usedIps4 := r.ipAllocator.GetUsedIPs(cidr4, &v1alpha1.WireguardPeerList{Items: peers})
+
+	var allocated []v1alpha1.WireguardPeer
+	for _, peer := range peers {
+		isNew := peer.Status.Address == ""
+		if isNew {
+			ip, allocErr := r.ipAllocator.AllocateIP(cidr4, usedIps4)
+			if allocErr != nil {
+				// A full pool is this peer's state, not the pass's: the others still get served.
+				if err := r.markPeerNotReady(ctx, &peer, addressPoolExhausted(cidr4)); err != nil && !skipPeerWrite(err) {
+					return nil, err
+				}
+				continue
 			}
 			peer.Status.Address = ip
 			// Reserved even if the write below is lost to a Conflict, so the next peer in this
 			// pass cannot take the same address.
 			usedIps4 = append(usedIps4, ip)
-		}
-
-		// A peer that was keyless still carries Ready=False/PublicKeyMissing; clear it.
-		if !allocated && peer.Status.Status == v1alpha1.Ready && meta.FindStatusCondition(peer.Status.Conditions, ConditionReady) == nil {
+		} else if peer.Status.Status == v1alpha1.Ready && meta.FindStatusCondition(peer.Status.Conditions, ConditionReady) == nil {
+			// Already admitted and ready: nothing to write.
+			allocated = append(allocated, peer)
 			continue
 		}
+
 		peer.Status.Status = v1alpha1.Ready
 		peer.Status.Message = "Peer configured"
 		meta.RemoveStatusCondition(&peer.Status.Conditions, ConditionReady)
 		if err := r.Status().Update(ctx, &peer); err != nil {
-			if skipPeerWrite(err) {
-				continue
+			if !skipPeerWrite(err) {
+				return nil, err
 			}
-			return err
+			// A new address that failed to persist is not the peer's address yet; an address the
+			// peer already held is, so it stays.
+			if !isNew {
+				allocated = append(allocated, peer)
+			}
+			continue
 		}
+		allocated = append(allocated, peer)
 	}
-
-	return nil
+	return allocated, nil
 }
 
 // markPeerNotReady records nr on peer with one status write, skipped when peerStatusMatches.
@@ -285,30 +311,6 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	// wireguardpeer
-	peers := &v1alpha1.WireguardPeerList{}
-	// TODO add a label to wireguardpeers and then filter by label here to only get peers of the wg instance we need.
-	if err := r.List(ctx, peers, client.InNamespace(req.Namespace)); err != nil {
-		log.Error(err, "Failed to fetch list of peers")
-		return ctrl.Result{}, err
-	}
-
-	var filteredPeers []v1alpha1.WireguardPeer
-	for _, peer := range peers.Items {
-		if peer.Spec.WireguardRef != wireguard.Name {
-			continue
-		}
-		if peer.Spec.PublicKey == "" {
-			continue
-		}
-
-		if peer.Status.Address == "" {
-			continue
-		}
-
-		filteredPeers = append(filteredPeers, peer)
-	}
-
 	// service
 	//
 	// Every field the builder renders converges. The server-assigned clusterIP survives because
@@ -321,6 +323,16 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.failDegraded(ctx, req, err, "ServiceApplyFailed", "Failed to apply service")
 	}
 
+	// peers
+	//
+	// Admitted and allocated before the Secret is rendered, so a new peer reaches state.json in the
+	// reconcile that allocates it.
+	admitted, err := r.reconcilePeers(ctx, req, wireguard)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Info("Updated related peers", "wireguard.Namespace", wireguard.Namespace, "wireguard.Name", wireguard.Name)
+
 	// fetch secret
 	secret := &corev1.Secret{}
 	err = r.Get(ctx, types.NamespacedName{Name: wireguard.Name, Namespace: wireguard.Namespace}, secret)
@@ -328,11 +340,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err == nil {
 		privateKey := string(secret.Data["privateKey"])
 
-		state := agent.State{
-			Server:           *wireguard.DeepCopy(),
-			ServerPrivateKey: privateKey,
-			Peers:            filteredPeers,
-		}
+		state := desiredState(wireguard, privateKey, admitted)
 
 		b, err := json.Marshal(state)
 		if err != nil {
@@ -393,11 +401,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		privateKey := key.String()
 		publicKey := key.PublicKey().String()
 
-		state := agent.State{
-			Server:           *wireguard.DeepCopy(),
-			ServerPrivateKey: privateKey,
-			Peers:            filteredPeers,
-		}
+		state := desiredState(wireguard, privateKey, admitted)
 
 		b, err := json.Marshal(state)
 		if err != nil {
@@ -434,12 +438,6 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.applyOwned(ctx, desiredDep); err != nil {
 		return r.failDegraded(ctx, req, err, "DeploymentApplyFailed", "Failed to apply deployment")
 	}
-
-	if err := r.updateWireguardPeers(ctx, req, wireguard); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	log.Info("Updated related peers", "wireguard.Namespace", wireguard.Namespace, "wireguard.Name", wireguard.Name)
 
 	err = r.updateStatus(ctx, req, metav1.Condition{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: "Active", Message: "VPN is active!"})
 
