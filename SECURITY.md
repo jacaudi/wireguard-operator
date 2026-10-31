@@ -1,17 +1,38 @@
 # Security Policy
-We attach great importance to the security of our users, but we are humans and not infallible.
-That's why we rely on you, the open source contributors, to inform us about actual and possible security vulnerabilities.
-Please follow the guideline below to get in touch with us, even if you're not sure, if your issue is regarding security.
+
+## Supported Versions
+
+wireguard-operator is in early development and has not published a release yet. Security fixes
+land on `main` and in the `latest` images built from it. Once releases exist, only the latest
+tagged release receives security fixes.
 
 ## Reporting a Vulnerability
-**Please do not open public GitHub issues for security vulnerabilities.**
 
-To report a vulnerability, use the GitHub Security advisory workflow:
+**Do not open a public issue for security vulnerabilities.**
 
-1. Go to the repository's "Security" tab.
-2. Click "Report a vulnerability" to open the private advisory form.
-3. Provide details and steps to reproduce (if available), impact, and any suggested fixes.
+Use GitHub's private vulnerability reporting:
+<https://github.com/jacaudi/wireguard-operator/security/advisories/new>
 
-Reports submitted via the advisory form are private and only visible to the maintainers. We aim to acknowledge new reports within two business days and will work with you to validate and remediate the issue as quickly as possible.
+If GitHub Security Advisories is unavailable, contact
+[@jacaudi](https://github.com/jacaudi) directly via GitHub.
 
-Thank you for helping keep this project secure.
+Include what you found, how to reproduce it, and the impact you expect. You will receive an
+acknowledgement within 72 hours. We aim to issue a fix or mitigation within 30 days for
+high-severity issues; lower-severity issues are addressed on a best-effort basis.
+
+## Scope
+
+In scope:
+- The manager (`cmd/manager`) and the agent (`cmd/agent`) binaries and their images.
+- The CRDs, RBAC and manifests under `config/`.
+- Handling of the server private key and of peer public keys and addresses.
+- Anything that lets peer traffic leave the server pod by a path the documentation does not
+  describe.
+
+Out of scope:
+- WireGuard itself, the kernel module and wireguard-go.
+- gluetun, VPN providers, and the cluster's CNI.
+- Cluster misconfiguration — Pod Security levels, RBAC granted by an administrator — that does not
+  reflect a defect in wireguard-operator itself.
+- The upstream [jodevsa/wireguard-operator](https://github.com/jodevsa/wireguard-operator); report
+  issues there to its maintainers.
