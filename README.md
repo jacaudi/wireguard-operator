@@ -111,9 +111,9 @@ yourself with the values in
 **4. Check status.**
 
 ```sh
-kubectl get wireguard vpn                                       # STATUS: ready
-kubectl get wireguardpeer peer1                                 # STATUS: ready
-kubectl get wireguardpeer peer1 -o jsonpath='{.spec.address}'   # the peer's tunnel address
+kubectl get wireguard vpn                                         # STATUS: ready
+kubectl get wireguardpeer peer1                                   # STATUS: ready
+kubectl get wireguardpeer peer1 -o jsonpath='{.status.address}'   # the peer's tunnel address
 ```
 
 Both read `ready` within a few reconciles. A peer without a `publicKey` stays `pending` with the

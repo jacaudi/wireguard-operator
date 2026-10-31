@@ -52,9 +52,10 @@ fork serves pods inside it, so most of what was removed has no replacement.
 
 - **Object names.** The server key Secret `<wireguard>`, its keys `privateKey` and `publicKey`,
   the Service `<wireguard>-svc` and the Deployment `<wireguard>-dep` keep upstream's names.
-- **Peer public keys and addresses.** `spec.publicKey` and `spec.address` keep their meaning, so a
-  peer upstream keyed for you keeps its key, as long as you still hold the private half from its
-  rendered configuration.
+- **Peer public keys and addresses.** `spec.publicKey` keeps its meaning, so a peer upstream keyed
+  for you keeps its key, as long as you still hold the private half from its rendered
+  configuration. The peer address is no longer a spec field: the operator allocates each peer a
+  fresh `status.address`, so a peer's address can change.
 
 ## Moving an install
 
@@ -73,7 +74,8 @@ install:
 
 3. Install this fork — see [installation.md](installation.md).
 4. Recreate each `Wireguard` with only the fields in [crd-wireguard.md](crd-wireguard.md#spec), and
-   each `WireguardPeer` with `wireguardRef`, `publicKey` and, to keep its old address, `address`.
+   each `WireguardPeer` with `wireguardRef` and `publicKey` only. The operator allocates each peer
+   an address afresh, so read it from `status.address` and update the client's `[Interface] Address`.
 5. The server gets a new key pair. Update every client's `[Peer] PublicKey`, and point its
    `Endpoint` at the new Service's cluster IP.
 
