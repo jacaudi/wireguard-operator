@@ -1,0 +1,57 @@
+# End-to-end tests against a real kind cluster (internal/it, build tag `e2e`).
+#
+# WHY THIS IS A STAGE OF ITS OWN: it needs Docker to build two images and to run
+# the kind node, which no composite action or envtest stage provides. Like
+# ci-integration.yml it is a job-level concern, wired into the `ci` gate in
+# ci.yaml.
+#
+# REPO-OWNED. The template models two tiers (unit in ci-lint, envtest in
+# ci-integration) and ships no e2e stage, so `copier update` will not write or
+# move this file (#44).
+#
+# IT BUILDS BOTH IMAGES LOCALLY and does not pull the digests `build` and
+# `build-agent` pushed. It runs the same two `make` targets a developer runs and
+# needs no registry credentials. The cost is that it tests images built from the
+# same commit rather than the published digests, plus about two minutes of image
+# build.
+#
+# kubectl comes from the runner image, not a pinned action. `make run-e2e` only
+# needs one on PATH, and pinning it would add an action for no present
+# requirement.
+#
+# The suite FAILS, never skips, when its environment is missing or setup breaks:
+# a skipped e2e stage would let `ci` go green having proved nothing.
+name: e2e
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MANAGER_IMAGE: wireguard-operator/manager:test
+      AGENT_IMAGE: wireguard-operator/agent:test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build images
+        run: make docker-build-integration-test MANAGER_IMAGE="${MANAGER_IMAGE}" AGENT_IMAGE="${AGENT_IMAGE}"
+
+      # The runner's ~/.kube/config is disposable, so E2E_KUBECONFIG keeps its
+      # default rather than pointing at a scratch file.
+      - name: Run e2e suite
+        run: make run-e2e MANAGER_IMAGE="${MANAGER_IMAGE}" AGENT_IMAGE="${AGENT_IMAGE}"
