@@ -56,8 +56,8 @@ What each state means:
   attach to a server elsewhere.
 - **The server finds its peers by `wireguardRef`.** Peers created by this operator version carry no
   ownerReference to their `Wireguard` and are not deleted with it. Peers created by an earlier
-  version keep theirs. Deleting the server leaves its peers in place, reading `pending` with
-  `WireguardNotFound`.
+  version keep theirs. Deleting the server leaves peers created by this version in place, reading
+  `pending` with `WireguardNotFound`.
 - **Deleting a peer removes it from `wg0`.** The operator drops it from `state.json`, and the
   agent removes any device peer whose key is no longer listed.
 - **One address, one peer.** If two peers of one server end up with the same

@@ -43,7 +43,7 @@ and are deleted with it.
 
 | Kind | Name | Contents |
 |---|---|---|
-| `Secret` | `<name>` | `privateKey` and `publicKey` (the server key pair), and `state.json` (the server and its addressed peers, read by the agent). |
+| `Secret` | `<name>` | `privateKey` and `publicKey` (the server key pair), and `state.json` (the server and its admitted peers, those with a valid key and an address, read by the agent). |
 | `Service` | `<name>-svc` | `ClusterIP`, one port `wireguard`, UDP `51820`. |
 | `Deployment` | `<name>-dep` | One replica. Init container `sysctl` (privileged, sets `net.ipv4.ip_forward=1`); container `agent` (`NET_ADMIN`, read-only root filesystem, UDP `51820`, readiness `GET /health` and liveness TCP on `8080`). Seccomp `RuntimeDefault`; no service-account token. |
 
