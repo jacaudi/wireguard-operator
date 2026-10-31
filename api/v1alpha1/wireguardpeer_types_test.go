@@ -49,7 +49,6 @@ func TestPublicKeyPatternMatchesWireGuardKeys(t *testing.T) {
 		for _, key := range []string{priv.String(), priv.PublicKey().String()} {
 			if !re.MatchString(key) {
 				t.Errorf("pattern %q does not match canonical key %q", re, key)
-				continue
 			}
 		}
 	}
