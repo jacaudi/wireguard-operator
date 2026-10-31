@@ -1,4 +1,4 @@
-// Package controllers implements the Wireguard and WireguardPeer reconcilers.
+// Package controllers implements the Wireguard reconciler, which also reconciles the WireguardPeers that name each Wireguard.
 package controllers
 
 import (
