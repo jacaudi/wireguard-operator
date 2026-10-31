@@ -23,6 +23,7 @@ import (
 // WireguardPeerSpec defines the desired state of WireguardPeer
 type WireguardPeerSpec struct {
 	// The key used by the peer to authenticate with the wg server.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$`
 	PublicKey string `json:"publicKey,omitempty"`
 	// The name of the Wireguard instance in k8s that the peer belongs to. The wg instance should be in the same namespace as the peer.
 	//+kubebuilder:validation:Required

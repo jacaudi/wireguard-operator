@@ -4,11 +4,13 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"net/netip"
 	"slices"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
 	"github.com/jacaudi/wireguard-operator/internal/agent"
 
+	wgtypes "golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	"k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,6 +27,8 @@ const (
 	ReasonWireguardNotFound = "WireguardNotFound"
 	// ReasonAddressPoolExhausted: the server's peerCIDR has no free address left.
 	ReasonAddressPoolExhausted = "AddressPoolExhausted"
+	// ReasonInvalidPublicKey: spec.publicKey is not a canonical WireGuard key.
+	ReasonInvalidPublicKey = "InvalidPublicKey"
 )
 
 // notReady is a peer state the server cannot admit: the summary fields and the Ready=False
@@ -42,6 +46,48 @@ var publicKeyMissing = notReady{
 	Message:          "Waiting for spec.publicKey",
 	Reason:           ReasonPublicKeyMissing,
 	ConditionMessage: "spec.publicKey is empty, so the server cannot admit this peer",
+}
+
+// invalidPublicKey is the state of a peer whose spec.publicKey is not a canonical WireGuard key.
+var invalidPublicKey = notReady{
+	Status:           v1alpha1.Error,
+	Message:          "spec.publicKey is not a valid WireGuard key",
+	Reason:           ReasonInvalidPublicKey,
+	ConditionMessage: "spec.publicKey is not a base64-encoded 32-byte WireGuard key, so the server cannot admit this peer",
+}
+
+// admissionProblem returns the not-ready record for a peer the server cannot admit, and false
+// when the peer is admissible. An empty publicKey is publicKeyMissing. A key is invalidPublicKey
+// unless wgtypes.ParseKey accepts it and the parsed key's String() equals it: the agent matches
+// peers by the canonical string, so a non-canonical key would be removed and re-added on every sync.
+func admissionProblem(peer *v1alpha1.WireguardPeer) (notReady, bool) {
+	key := peer.Spec.PublicKey
+	if key == "" {
+		return publicKeyMissing, true
+	}
+	if parsed, err := wgtypes.ParseKey(key); err != nil || parsed.String() != key {
+		return invalidPublicKey, true
+	}
+	return notReady{}, false
+}
+
+// validatePeerCIDR returns nil when cidr is a canonical IPv4 prefix (no host bits set) of length
+// 30 or shorter, and an error naming the violated rule otherwise.
+func validatePeerCIDR(cidr string) error {
+	p, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return fmt.Errorf("peerCIDR %q is not a CIDR: %w", cidr, err)
+	}
+	if !p.Addr().Is4() {
+		return fmt.Errorf("peerCIDR %q is not an IPv4 prefix", cidr)
+	}
+	if p != p.Masked() {
+		return fmt.Errorf("peerCIDR %q has host bits set; use %s", cidr, p.Masked())
+	}
+	if p.Bits() > 30 {
+		return fmt.Errorf("peerCIDR %q leaves no address for a peer; use /30 or shorter", cidr)
+	}
+	return nil
 }
 
 // wireguardNotFound is the state of a peer whose spec.wireguardRef names no Wireguard in namespace.
@@ -73,7 +119,7 @@ func desiredState(wg *v1alpha1.Wireguard, privateKey string, peers []v1alpha1.Wi
 	for i, peer := range peers {
 		rendered[i] = v1alpha1.WireguardPeer{
 			ObjectMeta: metav1.ObjectMeta{Name: peer.Name, Namespace: peer.Namespace},
-			Spec:       peer.Spec,
+			Spec:       v1alpha1.WireguardPeerSpec{PublicKey: peer.Spec.PublicKey, WireguardRef: peer.Spec.WireguardRef},
 			Status:     v1alpha1.WireguardPeerStatus{Address: peer.Status.Address},
 		}
 	}

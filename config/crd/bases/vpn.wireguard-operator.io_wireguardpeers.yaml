@@ -49,6 +49,7 @@ spec:
               publicKey:
                 description: The key used by the peer to authenticate with the wg
                   server.
+                pattern: ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$
                 type: string
               wireguardRef:
                 description: The name of the Wireguard instance in k8s that the peer

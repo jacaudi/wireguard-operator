@@ -158,13 +158,14 @@ func (r *WireguardReconciler) reconcilePeers(ctx context.Context, req ctrl.Reque
 func (r *WireguardReconciler) admitPeers(ctx context.Context, peers []v1alpha1.WireguardPeer) ([]v1alpha1.WireguardPeer, error) {
 	var admitted []v1alpha1.WireguardPeer
 	for _, peer := range peers {
-		if peer.Spec.PublicKey != "" {
+		nr, problem := admissionProblem(&peer)
+		if !problem {
 			admitted = append(admitted, peer)
 			continue
 		}
 		// A skipped peer is this peer's retry, not the loop's: whoever won the write, or the
 		// deletion, also emits a watch event, which re-enqueues the Wireguard.
-		if err := r.markPeerNotReady(ctx, &peer, publicKeyMissing); err != nil && !skipPeerWrite(err) {
+		if err := r.markPeerNotReady(ctx, &peer, nr); err != nil && !skipPeerWrite(err) {
 			return nil, err
 		}
 	}
@@ -309,6 +310,12 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 
 		return ctrl.Result{}, nil
+	}
+
+	// A peerCIDR the allocator cannot serve is permanent until the spec changes, and that edit
+	// triggers the next reconcile, so report it and return without an error to retry.
+	if err := validatePeerCIDR(effectivePeerCIDR4(wireguard)); err != nil {
+		return ctrl.Result{}, r.updateStatus(ctx, req, metav1.Condition{Type: ConditionDegraded, Status: metav1.ConditionTrue, Reason: "InvalidPeerCIDR", Message: err.Error()})
 	}
 
 	// service

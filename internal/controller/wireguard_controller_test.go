@@ -1083,6 +1083,72 @@ var _ = Describe("wireguard controller", func() {
 				HaveKeyWithValue(ConditionDegraded, metav1.ConditionFalse),
 			), "a successful reconcile must clear Degraded")
 		})
+
+		It("rejects a peer whose publicKey is not a WireGuard key at admission", func() {
+			peer := &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: "vpn-badkey-peer", Namespace: wgNamespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: "vpn", PublicKey: "not-a-key"},
+			}
+			err := k8sClient.Create(context.Background(), peer)
+			Expect(err).Should(HaveOccurred())
+			Expect(apierrors.IsInvalid(err)).Should(BeTrue(), "got %v", err)
+			Expect(err.Error()).Should(ContainSubstring("spec.publicKey"))
+		})
+
+		It("reports Degraded for an invalid peerCIDR and applies nothing until it is fixed", func() {
+			// Its own name: a still-running reconcile of an earlier spec's "vpn" could re-create
+			// vpn-svc or Secret vpn after BeforeEach deleted them.
+			badKey := types.NamespacedName{Name: "vpn-badcidr", Namespace: wgNamespace}
+			bad := &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: badKey.Name, Namespace: badKey.Namespace},
+				Spec:       v1alpha1.WireguardSpec{PeerCIDR: "10.8.0.5/24"},
+			}
+			Expect(k8sClient.Create(context.Background(), bad)).Should(Succeed())
+
+			Eventually(func() string {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), badKey, wg); err != nil {
+					return "get-failed"
+				}
+				for _, c := range wg.Status.Conditions {
+					if c.Type == ConditionDegraded && c.Status == metav1.ConditionTrue {
+						return c.Reason
+					}
+				}
+				return "no-degraded-condition"
+			}, Timeout, Interval).Should(Equal("InvalidPeerCIDR"))
+
+			// The validation returns before the Service apply, so nothing is written.
+			Consistently(func() []bool {
+				svcErr := k8sClient.Get(context.Background(), types.NamespacedName{Name: badKey.Name + "-svc", Namespace: badKey.Namespace}, &corev1.Service{})
+				secretErr := k8sClient.Get(context.Background(), badKey, &corev1.Secret{})
+				return []bool{apierrors.IsNotFound(svcErr), apierrors.IsNotFound(secretErr)}
+			}, "2s", Interval).Should(Equal([]bool{true, true}), "an invalid peerCIDR must apply no Service and no Secret")
+
+			Eventually(func() error {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), badKey, wg); err != nil {
+					return err
+				}
+				wg.Spec.PeerCIDR = "10.8.0.0/24"
+				return k8sClient.Update(context.Background(), wg)
+			}, Timeout, Interval).Should(Succeed())
+
+			Eventually(func() map[string]metav1.ConditionStatus {
+				wg := &v1alpha1.Wireguard{}
+				if err := k8sClient.Get(context.Background(), badKey, wg); err != nil {
+					return nil
+				}
+				got := map[string]metav1.ConditionStatus{}
+				for _, c := range wg.Status.Conditions {
+					got[c.Type] = c.Status
+				}
+				return got
+			}, Timeout, Interval).Should(SatisfyAll(
+				HaveKeyWithValue(ConditionReady, metav1.ConditionTrue),
+				HaveKeyWithValue(ConditionDegraded, metav1.ConditionFalse),
+			), "fixing the peerCIDR must clear Degraded")
+		})
 	})
 
 })
