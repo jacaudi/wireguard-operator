@@ -51,7 +51,7 @@ jobs:
       - name: Build images
         run: make docker-build-integration-test MANAGER_IMAGE="${MANAGER_IMAGE}" AGENT_IMAGE="${AGENT_IMAGE}"
 
-      # The runner's ~/.kube/config is disposable, so E2E_KUBECONFIG keeps its
-      # default rather than pointing at a scratch file.
+      # The runner uses the same scratch E2E_KUBECONFIG default as a local run, so
+      # kind never writes to ~/.kube/config.
       - name: Run e2e suite
         run: make run-e2e MANAGER_IMAGE="${MANAGER_IMAGE}" AGENT_IMAGE="${AGENT_IMAGE}"
