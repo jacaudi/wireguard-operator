@@ -219,10 +219,18 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              endpoint:
+                description: |-
+                  Endpoint is the address a client dials: the server Service's ClusterIP and the WireGuard port,
+                  as host:port.
+                type: string
               message:
                 description: A string field that provides additional information about
                   the status of Wireguard. This could include error messages or other
                   information that helps to diagnose issues with the wg instance.
+                type: string
+              publicKey:
+                description: PublicKey is the server's WireGuard public key.
                 type: string
               status:
                 description: A string field that represents the current status of

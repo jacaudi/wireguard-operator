@@ -50,6 +50,11 @@ type WireguardStatus struct {
 	Status string `json:"status,omitempty"`
 	// A string field that provides additional information about the status of Wireguard. This could include error messages or other information that helps to diagnose issues with the wg instance.
 	Message string `json:"message,omitempty"`
+	// Endpoint is the address a client dials: the server Service's ClusterIP and the WireGuard port,
+	// as host:port.
+	Endpoint string `json:"endpoint,omitempty"`
+	// PublicKey is the server's WireGuard public key.
+	PublicKey string `json:"publicKey,omitempty"`
 	// Conditions represent the latest available observations of the Wireguard's state.
 	// +optional
 	// +patchMergeKey=type
