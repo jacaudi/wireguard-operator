@@ -130,11 +130,6 @@ func (r *WireguardReconciler) updateStatus(ctx context.Context, req ctrl.Request
 	return nil
 }
 
-func getAvaialbleIp(cidr string, usedIps []string) (string, error) {
-	allocator := ipam.NewAllocator()
-	return allocator.AllocateIP(cidr, usedIps)
-}
-
 // effectivePeerCIDR4 returns the effective IPv4 peer CIDR for a Wireguard instance.
 func effectivePeerCIDR4(wg *v1alpha1.Wireguard) string {
 	if wg.Spec.PeerCIDR != "" {
@@ -158,8 +153,10 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 	for _, peer := range peers.Items {
 		if peer.Spec.PublicKey == "" {
 			if err := r.markPeerPublicKeyMissing(ctx, &peer); err != nil {
+				// A conflict is this peer's retry, not the loop's: whoever won the write
+				// also emits a watch event, which re-enqueues the owning Wireguard.
 				if errors.IsConflict(err) {
-					return nil
+					continue
 				}
 				return err
 			}
@@ -167,7 +164,7 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 		}
 
 		if peer.Spec.Address == "" {
-			ip, err := getAvaialbleIp(cidr4, usedIps4)
+			ip, err := r.ipAllocator.AllocateIP(cidr4, usedIps4)
 			if err != nil {
 				return err
 			}
@@ -185,7 +182,7 @@ func (r *WireguardReconciler) updateWireguardPeers(ctx context.Context, req ctrl
 			meta.RemoveStatusCondition(&peer.Status.Conditions, ConditionReady)
 			if err := r.Status().Update(ctx, &peer); err != nil {
 				if errors.IsConflict(err) {
-					return nil
+					continue
 				}
 				return err
 			}
@@ -369,14 +366,14 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err != nil && errors.IsNotFound(err) {
 
 		key, err := wgtypes.GeneratePrivateKey()
-
-		privateKey := key.String()
-		publicKey := key.PublicKey().String()
-
 		if err != nil {
 			log.Error(err, "Failed to generate private key")
 			return ctrl.Result{}, err
 		}
+
+		privateKey := key.String()
+		publicKey := key.PublicKey().String()
+
 		state := agent.State{
 			Server:           *wireguard.DeepCopy(),
 			ServerPrivateKey: privateKey,
