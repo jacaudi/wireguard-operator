@@ -2,11 +2,13 @@ package controllers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/netip"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
 	"github.com/jacaudi/wireguard-operator/internal/agent"
@@ -350,15 +352,181 @@ func FuzzValidatePeerCIDR(f *testing.F) {
 		f.Add(tt.cidr)
 	}
 	f.Fuzz(func(t *testing.T, cidr string) {
-		if validatePeerCIDR(cidr) != nil {
+		err := validatePeerCIDR(cidr)
+		p, parseErr := netip.ParsePrefix(cidr)
+		if err != nil {
+			// Reverse direction: every canonical IPv4 prefix of /30 or shorter is accepted.
+			if parseErr == nil && p.Addr().Is4() && p.Bits() <= 30 && p == p.Masked() {
+				t.Errorf("validatePeerCIDR(%q) = %v for the valid IPv4 prefix %v", cidr, err, p)
+			}
 			return
 		}
-		p, err := netip.ParsePrefix(cidr)
-		if err != nil {
-			t.Fatalf("validatePeerCIDR(%q) = nil, but netip.ParsePrefix fails: %v", cidr, err)
+		if parseErr != nil {
+			t.Fatalf("validatePeerCIDR(%q) = nil, but netip.ParsePrefix fails: %v", cidr, parseErr)
 		}
 		if !p.Addr().Is4() || p.Bits() > 30 || p != p.Masked() {
 			t.Errorf("validatePeerCIDR(%q) = nil for %v: want an IPv4 prefix of /30 or shorter with no host bits", cidr, p)
 		}
 	})
+}
+
+func TestAddressConflict(t *testing.T) {
+	want := notReady{
+		Status:           "pending",
+		Message:          "Address 10.8.0.2 is held by peer a; waiting for a new address",
+		Reason:           "AddressConflict",
+		ConditionMessage: "Address 10.8.0.2 is held by peer a; waiting for a new address",
+	}
+	if got := addressConflict("10.8.0.2", "a"); !reflect.DeepEqual(got, want) {
+		t.Errorf("addressConflict() = %+v, want %+v", got, want)
+	}
+}
+
+func TestDedupeAddresses(t *testing.T) {
+	base := time.Date(2026, time.October, 31, 12, 0, 0, 0, time.UTC)
+	t0, t1, t2 := metav1.NewTime(base), metav1.NewTime(base.Add(time.Second)), metav1.NewTime(base.Add(2*time.Second))
+	peer := func(name, address string, created metav1.Time) v1alpha1.WireguardPeer {
+		return v1alpha1.WireguardPeer{
+			ObjectMeta: metav1.ObjectMeta{Name: name, CreationTimestamp: created},
+			Status:     v1alpha1.WireguardPeerStatus{Address: address},
+		}
+	}
+	type loser struct{ peer, winner string }
+
+	tests := []struct {
+		name       string
+		peers      []v1alpha1.WireguardPeer
+		wantKeep   []string
+		wantLosers []loser
+	}{
+		{
+			name:     "no duplicates",
+			peers:    []v1alpha1.WireguardPeer{peer("a", "10.8.0.2", t0), peer("b", "10.8.0.3", t1)},
+			wantKeep: []string{"a", "b"},
+		},
+		{
+			name:       "older wins",
+			peers:      []v1alpha1.WireguardPeer{peer("young", "10.8.0.2", t1), peer("old", "10.8.0.2", t0)},
+			wantKeep:   []string{"old"},
+			wantLosers: []loser{{"young", "old"}},
+		},
+		{
+			name:       "tie goes to smaller name",
+			peers:      []v1alpha1.WireguardPeer{peer("b", "10.8.0.2", t0), peer("a", "10.8.0.2", t0)},
+			wantKeep:   []string{"a"},
+			wantLosers: []loser{{"b", "a"}},
+		},
+		{
+			name:       "three holders",
+			peers:      []v1alpha1.WireguardPeer{peer("c", "10.8.0.2", t2), peer("a", "10.8.0.2", t0), peer("b", "10.8.0.2", t1)},
+			wantKeep:   []string{"a"},
+			wantLosers: []loser{{"c", "a"}, {"b", "a"}},
+		},
+		{
+			name:     "unaddressed kept",
+			peers:    []v1alpha1.WireguardPeer{peer("x", "", t0), peer("y", "10.8.0.2", t1)},
+			wantKeep: []string{"x", "y"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keep, losers := dedupeAddresses(tt.peers)
+
+			var gotKeep []string
+			for _, p := range keep {
+				gotKeep = append(gotKeep, p.Name)
+			}
+			if !reflect.DeepEqual(gotKeep, tt.wantKeep) {
+				t.Errorf("dedupeAddresses() keep = %v, want %v", gotKeep, tt.wantKeep)
+			}
+			var gotLosers []loser
+			for _, l := range losers {
+				gotLosers = append(gotLosers, loser{l.Peer.Name, l.Winner})
+			}
+			if !reflect.DeepEqual(gotLosers, tt.wantLosers) {
+				t.Errorf("dedupeAddresses() losers = %v, want %v", gotLosers, tt.wantLosers)
+			}
+		})
+	}
+}
+
+func TestAddressUsable(t *testing.T) {
+	const cidr = "10.8.0.0/24"
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"10.8.0.2", true},
+		{"10.8.0.254", true},
+		{"10.8.0.255", true}, // the allocator hands the broadcast address out too
+		{"10.8.0.0", false},  // network
+		{"10.8.0.1", false},  // gateway
+		{"10.9.0.2", false},  // outside the prefix
+		{"", false},
+		{"garbage", false},
+		{"fd00::2", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			if got := addressUsable(tt.addr, cidr); got != tt.want {
+				t.Errorf("addressUsable(%q, %q) = %v, want %v", tt.addr, cidr, got, tt.want)
+			}
+		})
+	}
+}
+
+// failingStatusClient is a client whose every status write returns err; any other call panics on
+// the nil embedded client, which the test must not reach.
+type failingStatusClient struct {
+	client.Client
+	err error
+}
+
+func (c failingStatusClient) Status() client.SubResourceWriter {
+	return failingStatusWriter{err: c.err}
+}
+
+type failingStatusWriter struct {
+	client.SubResourceWriter
+	err error
+}
+
+func (w failingStatusWriter) Update(context.Context, client.Object, ...client.SubResourceUpdateOption) error {
+	return w.err
+}
+
+func TestAdmitPeersStatusWriteErrors(t *testing.T) {
+	gr := schema.GroupResource{Group: "vpn.wireguard-operator.io", Resource: "wireguardpeers"}
+	keyless := v1alpha1.WireguardPeer{ObjectMeta: metav1.ObjectMeta{Name: "keyless", Namespace: "default"}}
+	keyed := v1alpha1.WireguardPeer{
+		ObjectMeta: metav1.ObjectMeta{Name: "keyed", Namespace: "default"},
+		Spec:       v1alpha1.WireguardPeerSpec{PublicKey: publicKeyForTest(t)},
+	}
+	tests := []struct {
+		name      string
+		writeErr  error
+		wantNames []string
+		wantErr   bool
+	}{
+		{"invalid object is skipped", apierrors.NewInvalid(schema.GroupKind{Group: gr.Group, Kind: "WireguardPeer"}, "keyless", nil), []string{"keyed"}, false},
+		{"conflict is skipped", apierrors.NewConflict(gr, "keyless", errors.New("stale")), []string{"keyed"}, false},
+		{"other errors are returned", apierrors.NewInternalError(errors.New("boom")), nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &WireguardReconciler{Client: failingStatusClient{err: tt.writeErr}}
+
+			admitted, err := r.admitPeers(t.Context(), []v1alpha1.WireguardPeer{keyless, keyed})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("admitPeers() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			var got []string
+			for _, p := range admitted {
+				got = append(got, p.Name)
+			}
+			if !reflect.DeepEqual(got, tt.wantNames) {
+				t.Errorf("admitPeers() admitted %v, want %v", got, tt.wantNames)
+			}
+		})
+	}
 }

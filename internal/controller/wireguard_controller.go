@@ -150,7 +150,21 @@ func (r *WireguardReconciler) reconcilePeers(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		return nil, err
 	}
-	return r.allocatePeers(ctx, effectivePeerCIDR4(wg), admitted)
+	cidr4 := effectivePeerCIDR4(wg)
+	// An address the allocator could not have handed out on this server is treated as unallocated;
+	// allocatePeers writes a fresh one in its one status write.
+	for i := range admitted {
+		if addr := admitted[i].Status.Address; addr != "" && !addressUsable(addr, cidr4) {
+			admitted[i].Status.Address = ""
+		}
+	}
+	// Losers are neither allocated nor returned: their status write triggers the pass that
+	// re-allocates them, and the winners' addresses stay reserved because usedIps is computed from keep.
+	keep, losers := dedupeAddresses(admitted)
+	if err := r.releaseLosers(ctx, losers); err != nil {
+		return nil, err
+	}
+	return r.allocatePeers(ctx, cidr4, keep)
 }
 
 // admitPeers records a not-ready status on every peer the server cannot admit and returns the
@@ -166,6 +180,13 @@ func (r *WireguardReconciler) admitPeers(ctx context.Context, peers []v1alpha1.W
 		// A skipped peer is this peer's retry, not the loop's: whoever won the write, or the
 		// deletion, also emits a watch event, which re-enqueues the Wireguard.
 		if err := r.markPeerNotReady(ctx, &peer, nr); err != nil && !skipPeerWrite(err) {
+			// Without CRD validation ratcheting (Kubernetes before 1.30, or the gate off) a peer stored
+			// with a pre-pattern key fails whole-object validation on any status write; that must not
+			// stop the server's sync.
+			if errors.IsInvalid(err) {
+				ctrllog.FromContext(ctx).Error(err, "Cannot record the status of a peer the server cannot admit", "peer", peer.Name)
+				continue
+			}
 			return nil, err
 		}
 	}
@@ -219,6 +240,16 @@ func (r *WireguardReconciler) allocatePeers(ctx context.Context, cidr4 string, p
 		allocated = append(allocated, peer)
 	}
 	return allocated, nil
+}
+
+// releaseLosers records addressConflict on each loser, which clears its status.address.
+func (r *WireguardReconciler) releaseLosers(ctx context.Context, losers []addressLoser) error {
+	for _, l := range losers {
+		if err := r.markPeerNotReady(ctx, &l.Peer, addressConflict(l.Peer.Status.Address, l.Winner)); err != nil && !skipPeerWrite(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // markPeerNotReady records nr on peer with one status write, skipped when peerStatusMatches.
@@ -313,7 +344,7 @@ func (r *WireguardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// A peerCIDR the allocator cannot serve is permanent until the spec changes, and that edit
-	// triggers the next reconcile, so report it and return without an error to retry.
+	// triggers the next reconcile, so report it and return no error; only a failed status write is retried.
 	if err := validatePeerCIDR(effectivePeerCIDR4(wireguard)); err != nil {
 		return ctrl.Result{}, r.updateStatus(ctx, req, metav1.Condition{Type: ConditionDegraded, Status: metav1.ConditionTrue, Reason: "InvalidPeerCIDR", Message: err.Error()})
 	}

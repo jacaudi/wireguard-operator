@@ -29,6 +29,8 @@ const (
 	ReasonAddressPoolExhausted = "AddressPoolExhausted"
 	// ReasonInvalidPublicKey: spec.publicKey is not a canonical WireGuard key.
 	ReasonInvalidPublicKey = "InvalidPublicKey"
+	// ReasonAddressConflict: another, older peer holds this peer's address.
+	ReasonAddressConflict = "AddressConflict"
 )
 
 // notReady is a peer state the server cannot admit: the summary fields and the Ready=False
@@ -165,4 +167,65 @@ func peerStatusMatches(peer *v1alpha1.WireguardPeer, nr notReady) bool {
 // was deleted after the list).
 func skipPeerWrite(err error) bool {
 	return errors.IsConflict(err) || errors.IsNotFound(err)
+}
+
+// addressConflict is the not-ready record for a loser of address to winner.
+func addressConflict(address, winner string) notReady {
+	msg := fmt.Sprintf("Address %s is held by peer %s; waiting for a new address", address, winner)
+	return notReady{
+		Status:           v1alpha1.Pending,
+		Message:          msg,
+		Reason:           ReasonAddressConflict,
+		ConditionMessage: msg,
+	}
+}
+
+// addressUsable reports whether addr is a host address inside cidr4 that the allocator could have
+// handed out: it parses, lies in the prefix, and is neither the network nor the gateway (first
+// host) address.
+func addressUsable(addr, cidr4 string) bool {
+	a, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false
+	}
+	p, err := netip.ParsePrefix(cidr4)
+	if err != nil {
+		return false
+	}
+	p = p.Masked()
+	return p.Contains(a) && a != p.Addr() && a != p.Addr().Next()
+}
+
+// addressLoser is a peer that must give up its status.address to Winner, the name of the peer
+// that keeps it.
+type addressLoser struct {
+	Peer   v1alpha1.WireguardPeer
+	Winner string
+}
+
+// dedupeAddresses splits admissible peers into those that keep their state and those that must
+// give up a shared status.address. Among the holders of one address the peer with the oldest
+// creationTimestamp keeps it, ties going to the lexically smaller name; every other holder is a
+// loser. Peers without an address are kept. keep preserves the input order.
+func dedupeAddresses(peers []v1alpha1.WireguardPeer) (keep []v1alpha1.WireguardPeer, losers []addressLoser) {
+	older := func(a, b *v1alpha1.WireguardPeer) bool {
+		return cmp.Or(a.CreationTimestamp.Compare(b.CreationTimestamp.Time), cmp.Compare(a.Name, b.Name)) < 0
+	}
+	holder := map[string]*v1alpha1.WireguardPeer{}
+	for i := range peers {
+		p := &peers[i]
+		if h, ok := holder[p.Status.Address]; p.Status.Address != "" && (!ok || older(p, h)) {
+			holder[p.Status.Address] = p
+		}
+	}
+	for i := range peers {
+		p := &peers[i]
+		h := holder[p.Status.Address]
+		if h == nil || h == p {
+			keep = append(keep, *p)
+			continue
+		}
+		losers = append(losers, addressLoser{Peer: *p, Winner: h.Name})
+	}
+	return keep, losers
 }

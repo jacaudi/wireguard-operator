@@ -4,10 +4,12 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"time"
 
 	"github.com/jacaudi/wireguard-operator/api/v1alpha1"
+	"github.com/jacaudi/wireguard-operator/internal/agent"
 	"github.com/jacaudi/wireguard-operator/internal/resources"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -777,6 +779,106 @@ var _ = Describe("wireguard controller", func() {
 			}, "2s", Interval).Should(Equal("ready"), "a full pool must not degrade the server")
 		})
 
+		It("keeps the oldest peer's address when two peers share one", func() {
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			})).Should(Succeed())
+
+			peerAKey := types.NamespacedName{Name: wgName + "-peer-a", Namespace: wgNamespace}
+			peerBKey := types.NamespacedName{Name: wgName + "-peer-b", Namespace: wgNamespace}
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: peerAKey.Name, Namespace: peerAKey.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
+			})).Should(Succeed())
+			Eventually(peerAddress(peerAKey), Timeout, Interval).Should(Equal("10.8.0.2"))
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: peerBKey.Name, Namespace: peerBKey.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
+			})).Should(Succeed())
+			Eventually(peerAddress(peerBKey), Timeout, Interval).Should(Equal("10.8.0.3"))
+
+			// Simulate a stale-cache double allocation: the one allowed write to an operator-owned
+			// field, because the operator changes it back.
+			Eventually(func() error {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), peerBKey, got); err != nil {
+					return err
+				}
+				got.Status.Address = "10.8.0.2"
+				return k8sClient.Status().Update(context.Background(), got)
+			}, Timeout, Interval).Should(Succeed())
+
+			Eventually(func() bool {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), peerBKey, got); err != nil {
+					return false
+				}
+				return got.Status.Address != "" && got.Status.Address != "10.8.0.2" && got.Status.Status == v1alpha1.Ready
+			}, Timeout, Interval).Should(BeTrue(), "the younger holder of a shared address is re-allocated and ready")
+			Consistently(peerAddress(peerAKey), "2s", Interval).Should(Equal("10.8.0.2"), "the oldest holder keeps its address")
+
+			Eventually(func() []string {
+				secret := &corev1.Secret{}
+				if err := k8sClient.Get(context.Background(), wgKey, secret); err != nil {
+					return nil
+				}
+				var state agent.State
+				if err := json.Unmarshal(secret.Data["state.json"], &state); err != nil {
+					return nil
+				}
+				var addresses []string
+				for _, p := range state.Peers {
+					addresses = append(addresses, p.Status.Address)
+				}
+				slices.Sort(addresses)
+				return slices.Compact(addresses)
+			}, Timeout, Interval).Should(HaveLen(2), "state.json lists two peers with distinct addresses")
+		})
+
+		It("re-allocates a peer whose address is outside its server's peerCIDR", func() {
+			wg2Key := types.NamespacedName{Name: wgName + "2", Namespace: wgNamespace}
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
+			})).Should(Succeed())
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.Wireguard{
+				ObjectMeta: metav1.ObjectMeta{Name: wg2Key.Name, Namespace: wg2Key.Namespace},
+				Spec:       v1alpha1.WireguardSpec{PeerCIDR: "10.9.0.0/24"},
+			})).Should(Succeed())
+			for _, key := range []types.NamespacedName{wgKey, wg2Key} {
+				Eventually(func() string {
+					wg := &v1alpha1.Wireguard{}
+					_ = k8sClient.Get(context.Background(), key, wg)
+					return wg.Status.Status
+				}, Timeout, Interval).Should(Equal("ready"))
+			}
+
+			publicKey := newPublicKey()
+			peerKey := types.NamespacedName{Name: wgName + "-cidr-peer", Namespace: wgNamespace}
+			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
+				ObjectMeta: metav1.ObjectMeta{Name: peerKey.Name, Namespace: peerKey.Namespace},
+				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: publicKey},
+			})).Should(Succeed())
+			Eventually(peerAddress(peerKey), Timeout, Interval).Should(Equal("10.8.0.2"))
+
+			Eventually(func() error {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
+					return err
+				}
+				got.Spec.WireguardRef = wg2Key.Name
+				return k8sClient.Update(context.Background(), got)
+			}, Timeout, Interval).Should(Succeed())
+
+			Eventually(func() string {
+				got := &v1alpha1.WireguardPeer{}
+				if err := k8sClient.Get(context.Background(), peerKey, got); err != nil {
+					return "get-failed"
+				}
+				return got.Status.Address + "|" + got.Status.Status
+			}, Timeout, Interval).Should(Equal("10.9.0.2|"+v1alpha1.Ready), "a peer moved to a server with another peerCIDR is re-allocated inside it")
+			Eventually(serverState(wg2Key), Timeout, Interval).Should(ContainSubstring(publicKey), "the new server admits the peer")
+		})
+
 		It("reverts a Deployment field changed outside the operator", func() {
 			created := &v1alpha1.Wireguard{
 				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
@@ -1170,5 +1272,17 @@ func serverState(key types.NamespacedName) func() string {
 			return ""
 		}
 		return string(secret.Data["state.json"])
+	}
+}
+
+// peerAddress returns a poller for the status.address of the peer named by key, or "get-failed"
+// while it cannot be read.
+func peerAddress(key types.NamespacedName) func() string {
+	return func() string {
+		got := &v1alpha1.WireguardPeer{}
+		if err := k8sClient.Get(context.Background(), key, got); err != nil {
+			return "get-failed"
+		}
+		return got.Status.Address
 	}
 }
