@@ -579,23 +579,12 @@ var _ = Describe("wireguard controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: wgKey.Name, Namespace: wgKey.Namespace},
 			})).Should(Succeed())
 
-			// address returns the peer's status.address, or says why it could not read it.
-			address := func(key types.NamespacedName) func() string {
-				return func() string {
-					got := &v1alpha1.WireguardPeer{}
-					if err := k8sClient.Get(context.Background(), key, got); err != nil {
-						return "get-failed"
-					}
-					return got.Status.Address
-				}
-			}
-
 			releasedKey := types.NamespacedName{Name: wgName + "-released-peer", Namespace: wgNamespace}
 			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
 				ObjectMeta: metav1.ObjectMeta{Name: releasedKey.Name, Namespace: releasedKey.Namespace},
 				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
 			})).Should(Succeed())
-			Eventually(address(releasedKey), Timeout, Interval).Should(Equal("10.8.0.2"))
+			Eventually(peerAddress(releasedKey), Timeout, Interval).Should(Equal("10.8.0.2"))
 
 			Eventually(func() error {
 				got := &v1alpha1.WireguardPeer{}
@@ -623,7 +612,7 @@ var _ = Describe("wireguard controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: reuseKey.Name, Namespace: reuseKey.Namespace},
 				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
 			})).Should(Succeed())
-			Eventually(address(reuseKey), Timeout, Interval).Should(Equal("10.8.0.2"))
+			Eventually(peerAddress(reuseKey), Timeout, Interval).Should(Equal("10.8.0.2"))
 		})
 
 		It("moves a peer to the server its wireguardRef names", func() {
@@ -716,16 +705,6 @@ var _ = Describe("wireguard controller", func() {
 				Spec:       v1alpha1.WireguardSpec{PeerCIDR: "10.8.0.0/30"},
 			})).Should(Succeed())
 
-			address := func(key types.NamespacedName) func() string {
-				return func() string {
-					got := &v1alpha1.WireguardPeer{}
-					if err := k8sClient.Get(context.Background(), key, got); err != nil {
-						return "get-failed"
-					}
-					return got.Status.Address
-				}
-			}
-
 			pool1Key := types.NamespacedName{Name: wgName + "-pool-1", Namespace: wgNamespace}
 			pool2Key := types.NamespacedName{Name: wgName + "-pool-2", Namespace: wgNamespace}
 			pool3Key := types.NamespacedName{Name: wgName + "-pool-3", Namespace: wgNamespace}
@@ -735,12 +714,12 @@ var _ = Describe("wireguard controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: pool1Key.Name, Namespace: pool1Key.Namespace},
 				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: newPublicKey()},
 			})).Should(Succeed())
-			Eventually(address(pool1Key), Timeout, Interval).Should(Equal("10.8.0.2"))
+			Eventually(peerAddress(pool1Key), Timeout, Interval).Should(Equal("10.8.0.2"))
 			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
 				ObjectMeta: metav1.ObjectMeta{Name: pool2Key.Name, Namespace: pool2Key.Namespace},
 				Spec:       v1alpha1.WireguardPeerSpec{WireguardRef: wgName, PublicKey: pool2PublicKey},
 			})).Should(Succeed())
-			Eventually(address(pool2Key), Timeout, Interval).Should(Equal("10.8.0.3"))
+			Eventually(peerAddress(pool2Key), Timeout, Interval).Should(Equal("10.8.0.3"))
 
 			Expect(k8sClient.Create(context.Background(), &v1alpha1.WireguardPeer{
 				ObjectMeta: metav1.ObjectMeta{Name: pool3Key.Name, Namespace: pool3Key.Namespace},

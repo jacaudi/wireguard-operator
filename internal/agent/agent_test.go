@@ -114,13 +114,13 @@ func TestIsStateValidIgnoresFieldsTheAgentDoesNotRead(t *testing.T) {
 
 	state, _, err := GetDesiredState(writeState(t, legacy))
 	if err != nil {
-		t.Fatalf("GetDesiredState(pre-trim state): %v", err)
+		t.Fatalf("GetDesiredState(state with unknown fields): %v", err)
 	}
 	if err := IsStateValid(state); err != nil {
-		t.Errorf("IsStateValid(pre-trim state) = %v, want nil", err)
+		t.Errorf("IsStateValid(state with unknown fields) = %v, want nil", err)
 	}
 	if len(state.Peers) != 1 || state.Peers[0].Status.Address != "10.8.0.2" {
-		t.Errorf("peers = %+v, want the single pre-trim peer at 10.8.0.2", state.Peers)
+		t.Errorf("peers = %+v, want the single peer of the state with unknown fields at 10.8.0.2", state.Peers)
 	}
 }
 
