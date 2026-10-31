@@ -13,8 +13,7 @@ See [`examples/02-peer.yaml`](../examples/02-peer.yaml).
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `wireguardRef` | string | — | **Required**, minimum length 1. The name of the `Wireguard` this peer belongs to, in the peer's own namespace. |
-| `publicKey` | string | — | The peer's WireGuard public key, as printed by `wg pubkey`. Without it the peer gets no address and the server does not admit it. |
-| `address` | string | allocated | The peer's IPv4 address on the tunnel, without a prefix length. The operator fills it from the server's `peerCIDR` when it is empty; you can set it yourself. The server routes `<address>/32` to this peer. |
+| `publicKey` | string | — | The peer's WireGuard public key, as printed by `wg pubkey`. Validated at admission as a canonical 32-byte base64 WireGuard key. To register a peer without a key, omit the field: an explicit `""` is rejected. Without a key the peer gets no address and the server does not admit it. |
 
 > **The private key never enters the cluster.** Generate the key pair where the client runs and
 > register only the public half. The operator neither mints, stores nor reads a peer private key.
@@ -25,37 +24,51 @@ See [`examples/02-peer.yaml`](../examples/02-peer.yaml).
 |---|---|
 | `status` | `pending`, `ready` or `error`. |
 | `message` | Why the peer is in that state. See the table below. |
+| `address` | The peer's IPv4 tunnel address, without a prefix length, allocated by the operator from the server's `peerCIDR`. The server routes `<address>/32` to this peer. Released when the peer loses its key, and re-allocated when it is not a usable host address inside the server's `peerCIDR`. |
 | `conditions` | Standard `metav1.Condition` list, keyed by `type`. Empty for a healthy peer. |
 
 What each state means:
 
 | `status` | `message` | Meaning |
 |---|---|---|
-| `pending` | `Waiting for wireguard peer to be created` | First reconcile of a new peer. |
 | `pending` | `Waiting for spec.publicKey` | No `publicKey`; see `PublicKeyMissing` below. |
-| `error` | `Waiting for wireguard resource '<ref>' to be created` | No `Wireguard` named `wireguardRef` exists in this namespace. |
-| `error` | `Waiting for <ref> to be ready` | The `Wireguard` exists but is not `ready` yet. |
-| `error` | `Duplicate address <ip>: already used by peer <name>` | Another peer of the same server carries the same `address`. |
-| `ready` | `Peer configured` | The peer has a key and an address and is part of the server's state. |
+| `error` | `spec.publicKey is not a valid WireGuard key` | The stored key is not a canonical WireGuard key; see `InvalidPublicKey` below. |
+| `pending` | `Waiting for wireguard resource '<ref>' to be created` | No `Wireguard` named `wireguardRef` exists in this namespace. |
+| `pending` | `Address <ip> is held by peer <name>; waiting for a new address` | Another, older peer of the same server holds this peer's address; see `AddressConflict` below. |
+| `pending` | `No free address in <peerCIDR>` | The server's `peerCIDR` has no free address left. |
+| `ready` | `Peer configured` | The peer is admitted with an address. The server's agent picks it up from the next `state.json` write. |
 
 ## Conditions
 
-| Type | Meaning |
-|---|---|
-| `Ready` | Written only as `False`, reason `PublicKeyMissing`, message `spec.publicKey is empty, so the server cannot admit this peer`. The operator removes the condition once a `publicKey` is set and the peer has an address. |
+`Ready` is written only as `False`. The operator removes it once the peer is admitted.
+
+| Type | Reason | Meaning |
+|---|---|---|
+| `Ready=False` | `PublicKeyMissing` | `spec.publicKey` is empty, so the server cannot admit this peer. |
+| `Ready=False` | `InvalidPublicKey` | `spec.publicKey` is not a base64-encoded 32-byte WireGuard key, so the server cannot admit this peer. |
+| `Ready=False` | `WireguardNotFound` | No `Wireguard` named `wireguardRef` exists in the peer's namespace. |
+| `Ready=False` | `AddressConflict` | Another, older peer holds this peer's address. The peer gives its address up and is allocated a new one. |
+| `Ready=False` | `AddressPoolExhausted` | The server's `peerCIDR` has no free address for this peer. The server stays `ready` and keeps serving the peers that hold addresses. |
 
 ## Lifecycle notes
 
 - **Same namespace only.** `wireguardRef` resolves in the peer's own namespace; a peer cannot
   attach to a server elsewhere.
-- **Owned by its server.** Once the `Wireguard` is `ready`, the operator sets it as the peer's
-  controller owner, so deleting the server deletes its peers.
+- **The server finds its peers by `wireguardRef`.** Peers created by this operator version carry no
+  ownerReference to their `Wireguard` and are not deleted with it. Peers created by an earlier
+  version keep theirs. Deleting the server leaves its peers in place, reading `pending` with
+  `WireguardNotFound`.
 - **Deleting a peer removes it from `wg0`.** The operator drops it from `state.json`, and the
   agent removes any device peer whose key is no longer listed.
-- **Duplicates are reported, not prevented.** A duplicate `address` sets `status: error`, but the
-  peer stays in the server's state, and the server's reconcile can set it back to `ready`. On
-  `wg0` the `/32` belongs to only one of the two keys. Fix the `address` on one of them.
-- **A malformed `publicKey` stalls the whole server.** The API accepts any string. The agent then
-  fails to parse the key, applies no peer changes at all, and fails its readiness probe until the
-  peer is fixed or deleted. Peer validation is not yet available. Tracked in
-  [#37](https://github.com/jacaudi/wireguard-operator/issues/37).
+- **One address, one peer.** If two peers of one server end up with the same
+  `status.address`, the peer with the oldest `creationTimestamp` keeps it. Ties go to the smaller
+  name. The other peer reads `AddressConflict` and is allocated a new address.
+- **A malformed `publicKey` is rejected at admission.** The API refuses a key that is not a
+  canonical 32-byte base64 WireGuard key, so it cannot stall the server. A key stored before that
+  check reports `InvalidPublicKey` and is left out of the server's state.
+- **Clusters without CRD validation ratcheting.** Kubernetes before 1.30, or with the feature gate
+  off, validates the whole object on every write. There, a peer stored with a `publicKey` that
+  predates the pattern cannot have its status written. The operator logs an error on every
+  reconcile and leaves the peer out of the server's state, but the peer keeps its old status, and
+  its old `status.address` is not reserved, so another peer can be given it. Fix it by deleting the
+  peer, or by setting a canonical key.

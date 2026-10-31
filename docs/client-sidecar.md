@@ -14,9 +14,9 @@ client must run inside the cluster.
 | Setting | Value | How to read it |
 |---|---|---|
 | `[Interface] PrivateKey` | Your private key | The `peer.key` you generated with `wg genkey`. |
-| `[Interface] Address` | `<address>/32` | `kubectl get wireguardpeer <peer> -o jsonpath='{.spec.address}'` |
-| `[Peer] PublicKey` | The server's public key | `kubectl get secret <wireguard> -o jsonpath='{.data.publicKey}' \| base64 -d` |
-| `[Peer] Endpoint` | `<cluster IP>:51820` | `kubectl get service <wireguard>-svc -o jsonpath='{.spec.clusterIP}'` |
+| `[Interface] Address` | `<address>/32` | `kubectl get wireguardpeer <peer> -o jsonpath='{.status.address}'` |
+| `[Peer] PublicKey` | The server's public key | `kubectl get wireguard <wireguard> -o jsonpath='{.status.publicKey}'` |
+| `[Peer] Endpoint` | `<cluster IP>:51820` | `kubectl get wireguard <wireguard> -o jsonpath='{.status.endpoint}'` |
 | `[Peer] AllowedIPs` | The server's address, `/32` | The first host of the server's `peerCIDR`: `10.8.0.1/32` by default. |
 
 ```ini
@@ -43,8 +43,8 @@ operator injects nothing; there is no webhook.
 1. **One key per pod, minted in the pod.** The sidecar generates its private key into a
    memory-backed volume, so a container restart reuses it and it never reaches etcd or disk.
 2. **Self-registration.** It creates a `WireguardPeer` named after the pod, with the pod as its
-   controller owner, so the peer is garbage-collected with the pod. The allocated address moves
-   from `spec.address` to `status.address`, which only the operator can write.
+   controller owner, so the peer is garbage-collected with the pod. The allocated address is in
+   `status.address`, which only the operator can write.
 3. **Configuration from the server.** It reads the server's endpoint, public key and
    `localCIDRs` from the `Wireguard` and re-applies them when they change.
 4. **Routing, not firewalling.** It routes each `localCIDRs` entry via the pod's CNI gateway,

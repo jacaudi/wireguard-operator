@@ -20,8 +20,8 @@ New here? Start with the [Quick start in the root README](../README.md#quick-sta
 
 - **`Wireguard`** reconcile — server key Secret, single-replica server Deployment, ClusterIP
   Service on UDP `51820`, all applied with Server-Side Apply and garbage-collected with the CR.
-- **`WireguardPeer`** registration — address allocation from `peerCIDR`, `PublicKeyMissing`
-  reporting, duplicate-address reporting, ownership by the `Wireguard`.
+- **`WireguardPeer`** registration — `status.address` allocation from `peerCIDR`,
+  `PublicKeyMissing`/`InvalidPublicKey` reporting, address dedupe.
 - **Agent** — kernel WireGuard with a wireguard-go fallback; adds, updates and removes peers by
   public key as `state.json` changes; `/health` readiness.
 
@@ -31,9 +31,6 @@ New here? Start with the [Quick start in the root README](../README.md#quick-sta
   [#3](https://github.com/jacaudi/wireguard-operator/issues/3).
 - **Client sidecar** — see [client-sidecar.md](client-sidecar.md). Tracked in
   [#32](https://github.com/jacaudi/wireguard-operator/issues/32).
-- **Peer validation** — a malformed `publicKey` is accepted by the API today (see
-  [crd-wireguardpeer.md](crd-wireguardpeer.md#lifecycle-notes)). Tracked in
-  [#37](https://github.com/jacaudi/wireguard-operator/issues/37).
 - **OCI Helm chart** — see [installation.md](installation.md#install-with-helm-oci). Tracked in
   [#48](https://github.com/jacaudi/wireguard-operator/issues/48).
 

@@ -16,9 +16,14 @@ WireguardPeer ──wireguardRef──▶ Wireguard ──owns──▶ Secret <
 ```
 
 - **[`Wireguard`](crd-wireguard.md)** — the server. It owns the key Secret, the ClusterIP Service
-  and the single-replica Deployment, and it is the controller owner of its peers.
+  and the single-replica Deployment. It does not own its peers.
 - **[`WireguardPeer`](crd-wireguardpeer.md)** — a client. It carries the public key and receives an
   address. It lives in the server's namespace and is resolved there.
+
+There is one controller. It reconciles each `Wireguard` and also watches `WireguardPeer` objects,
+mapping each peer to the server its `wireguardRef` names, not to an owner. A peer change therefore
+reconciles the server it points at, and a peer that changes `wireguardRef` reconciles both the old
+and the new server.
 
 The split follows WireGuard itself: an interface has one key pair and many peers, and a peer is
 nothing more than a public key and the addresses routed to it.
@@ -50,8 +55,10 @@ The sidecar and the gluetun hop are designed, not yet implemented — see
   starts `wireguard-go` when the module is missing. It assigns the first host of `peerCIDR` to
   `wg0`, routes `peerCIDR` to it, and listens on UDP `51820`.
 - **State, not commands.** The manager never talks to the agent. It writes the desired state — the
-  server's private key and every peer with a key and an address — into the Secret's `state.json`,
-  which the pod mounts. The agent watches the file and diffs it against the live device, adding,
+  server's private key, the server's name, namespace and spec, and each peer's name, namespace,
+  `publicKey`, `wireguardRef` and `status.address`, sorted by name — into the Secret's
+  `state.json`, which the pod mounts. Peer metadata and the rest of the status never reach it, so
+  writing them does not rewrite the Secret. The agent watches the file and diffs it against the live device, adding,
   updating and removing peers by public key.
 - **Readiness.** `GET /health` on port `8080` re-reads and re-applies the state; it fails when the
   state is missing, invalid or cannot be applied.
@@ -62,9 +69,12 @@ The sidecar and the gluetun hop are designed, not yet implemented — see
   the operator never handles a peer private key. The server's own key pair is generated once by
   the operator and kept in the Secret.
 - **Addresses are allocated, not leased.** The operator assigns the first free address in
-  `peerCIDR` to each peer that has a key and no `address`, skipping the network address and the
-  server's. Allocation runs inside one reconcile over the server's peers, so two new peers in the
-  same pass cannot collide. The server routes exactly `<address>/32` to each peer.
+  `peerCIDR` to each peer that has a key and no address, skipping the network address and the
+  server's, and writes it to the peer's `status.address`. Allocation runs inside one reconcile over
+  the server's peers, so two new peers in the same pass cannot collide. The server routes exactly
+  `<address>/32` to each peer.
+- **Duplicates are resolved.** If a stale cache still lets two peers hold one address, the oldest
+  `creationTimestamp` wins. The others get `AddressConflict` and are re-allocated.
 
 ## Failure behaviour
 
