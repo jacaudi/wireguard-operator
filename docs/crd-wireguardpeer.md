@@ -34,7 +34,7 @@ What each state means:
 | `pending` | `Waiting for spec.publicKey` | No `publicKey`; see `PublicKeyMissing` below. |
 | `error` | `spec.publicKey is not a valid WireGuard key` | The stored key is not a canonical WireGuard key; see `InvalidPublicKey` below. |
 | `pending` | `Waiting for wireguard resource '<ref>' to be created` | No `Wireguard` named `wireguardRef` exists in this namespace. |
-| `pending` | `Address <ip> is held by peer <name>; waiting for a new address` | Another, older peer of the same server holds this peer's address; see `AddressConflict` below. |
+| `pending` | `Address <ip> is held by peer <name>; waiting for a new address` | Another peer of the same server holds this peer's address and wins the dedupe (oldest `creationTimestamp`, smaller name on a tie); see `AddressConflict` below. |
 | `pending` | `No free address in <peerCIDR>` | The server's `peerCIDR` has no free address left. |
 | `ready` | `Peer configured` | The peer is admitted with an address. The server's agent picks it up from the next `state.json` write. |
 
@@ -47,7 +47,7 @@ What each state means:
 | `Ready=False` | `PublicKeyMissing` | `spec.publicKey` is empty, so the server cannot admit this peer. |
 | `Ready=False` | `InvalidPublicKey` | `spec.publicKey` is not a base64-encoded 32-byte WireGuard key, so the server cannot admit this peer. |
 | `Ready=False` | `WireguardNotFound` | No `Wireguard` named `wireguardRef` exists in the peer's namespace. |
-| `Ready=False` | `AddressConflict` | Another, older peer holds this peer's address. The peer gives its address up and is allocated a new one. |
+| `Ready=False` | `AddressConflict` | Another peer holds this peer's address and is the one that wins the dedupe (oldest `creationTimestamp`, smaller name on a tie). The peer gives its address up and is allocated a new one. |
 | `Ready=False` | `AddressPoolExhausted` | The server's `peerCIDR` has no free address for this peer. The server stays `ready` and keeps serving the peers that hold addresses. |
 
 ## Lifecycle notes

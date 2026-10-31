@@ -58,10 +58,10 @@ The sidecar and the gluetun hop are designed, not yet implemented — see
   server's private key, the server's name, namespace and spec, and, for each peer the server
   admits (a valid key and an address), the peer's name, namespace, `publicKey`, `wireguardRef` and
   `status.address`, sorted by name — into the Secret's `state.json`, which the pod mounts. A peer
-  with no key, an invalid key, an address conflict or no free address is left out. Peer metadata
-  and the rest of the status never reach the file, so writing them does not rewrite the Secret.
-  The agent watches the file and diffs it against the live device, adding, updating and removing
-  peers by public key.
+  with no key, an invalid key, an address conflict or no free address is left out. Other peer
+  metadata (labels, annotations, resourceVersion, managedFields) and the rest of the status never
+  reach the file, so writing them does not rewrite the Secret. The agent watches the file and
+  diffs it against the live device, adding, updating and removing peers by public key.
 - **Readiness.** `GET /health` on port `8080` re-reads and re-applies the state; it fails when the
   state is missing, invalid or cannot be applied.
 
