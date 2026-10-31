@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 	kind "sigs.k8s.io/kind/pkg/cluster"
-	log2 "sigs.k8s.io/kind/pkg/log"
+	kindcmd "sigs.k8s.io/kind/pkg/cmd"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -273,7 +273,7 @@ var _ = BeforeSuite(func() {
 	By("bootstrapping test environment")
 
 	provider := kind.NewProvider(
-		kind.ProviderWithLogger(log2.NoopLogger{}))
+		kind.ProviderWithLogger(kindcmd.NewLogger()))
 
 	err := provider.Create(testClusterName, kind.CreateWithV1Alpha4Config(&config))
 	Expect(err).NotTo(HaveOccurred(), "kind create cluster %s", testClusterName)
